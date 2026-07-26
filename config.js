@@ -61,7 +61,8 @@
   treasuryWallet:
     "7Ut8PPBHyQnnJCmMcVrJx43jT25hK1ugX3uSuyyu6DaC",
 
-  entryPriceUsd: 0.5,
+  entryPriceSol: 0.015,
+entryPriceDisplay: "0.015 SOL",
 
   verification: {
     required: true,
