@@ -25,52 +25,68 @@
     },
 
     tournament: {
-      id: "pumpball-tournament-001",
-      name: "PumpBall Tournament #001",
-      promotionalLabel: "First-Time Promo",
+  id: "pumpball-tournament-001",
+  season: 1,
+  slug: "season-001",
 
-      status: "coming-soon",
+  name: "PumpBall Tournament #001",
+  promotionalLabel: "First Tournament Promo",
 
-      entryPriceUsd: 0.5,
-      entryPriceDisplay: "$0.50",
+  status: "coming-soon",
 
-      prizePoolSol: 1,
-      prizePoolDisplay: "1 SOL",
+  entryPriceSol: 0.015,
+  entryPriceLamports: 15_000_000,
+  entryPriceDisplay: "0.015 SOL",
 
-      winnerCount: 2,
-      payoutPerWinnerSol: 0.5,
+  prizePoolSol: 1,
+  prizePoolDisplay: "1 SOL",
 
-      // Replace these before launch.
-      startsAt: "2026-08-01T12:00:00-04:00",
-      endsAt: "2026-08-08T12:00:00-04:00",
+  winnerCount: 2,
+  payoutPerWinnerSol: 0.5,
 
-      onlyHighestScoreCounts: true,
-      unlimitedPaidAttempts: true,
+  startsAt: "2026-08-01T12:00:00-04:00",
+  endsAt: "2026-08-08T12:00:00-04:00",
 
-      tieBreakers: [
-        "fewest-attempts",
-        "earliest-score",
-        "earliest-session-completion"
-      ]
-    },
+  leaderboardScope: "tournament",
+  archiveLeaderboardAfterEnd: true,
+
+  onlyHighestScoreCounts: true,
+  unlimitedPaidAttempts: true,
+
+  tieBreakers: [
+    "fewest-attempts",
+    "earliest-score",
+    "earliest-session-completion"
+  ]
+},
 
     payments: {
   enabled: false,
+  testMode: true,
+
   network: "mainnet-beta",
 
   treasuryWallet:
     "7Ut8PPBHyQnnJCmMcVrJx43jT25hK1ugX3uSuyyu6DaC",
 
-  entryPriceSol: 0.015,
-entryPriceDisplay: "0.015 SOL",
+  currency: "SOL",
 
   verification: {
     required: true,
+
+    commitment: "confirmed",
     minimumConfirmations: 1,
-    preventDuplicateTransactions: true,
+
     requireExactRecipient: true,
-    requireValidPlayCredit: true
-  },
+    requireExactAmount: true,
+    requireTournamentReference: true,
+
+    preventDuplicateTransactions: true,
+    preventDuplicatePlayCredits: true,
+
+    transactionExpirationMs: 10 * 60 * 1000
+  }
+},
 
   testMode: true
 },
