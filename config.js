@@ -54,6 +54,25 @@
       ]
     },
 
+    payments: {
+  enabled: false,
+  network: "mainnet-beta",
+
+  treasuryWallet:
+    "7Ut8PPBHyQnnJCmMcVrJx43jT25hK1ugX3uSuyyu6DaC",
+
+  entryPriceUsd: 0.5,
+
+  verification: {
+    required: true,
+    minimumConfirmations: 1,
+    preventDuplicateTransactions: true,
+    requireExactRecipient: true,
+    requireValidPlayCredit: true
+  },
+
+  testMode: true
+},
     game: {
       /**
        * Internal game resolution.
