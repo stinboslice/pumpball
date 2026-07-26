@@ -87,9 +87,6 @@
     transactionExpirationMs: 10 * 60 * 1000
   }
 },
-
-  testMode: true
-},
     game: {
       /**
        * Internal game resolution.
