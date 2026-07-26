@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
+  >
+  <meta
+    name="description"
+    content="PumpBall is a competitive browser pinball tournament where your highest score can win SOL."
+  >
+  <meta name="theme-color" content="#070707">
+  <title>PumpBall | Competitive Pinball Tournament</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <noscript>
+    <div class="noscript-message">
+      PumpBall requires JavaScript to run.
+    </div>
+  </noscript>
+  <div id="app">
+    <header class="site-header">
+      <a
+        class="brand"
+        href="./"
+        aria-label="PumpBall home"
+      >
+        <span class="brand-mark" aria-hidden="true">●</span>
+        <span class="brand-text">
+          PUMPBALL
+        </span>
+      </a>
+      <div class="header-actions">
+        <div
+          id="wallet-status"
+          class="wallet-status"
+          aria-live="polite"
+        >
+          Wallet not connected
+        </div>
+        <button
+          id="connect-wallet-button"
+          class="button button-secondary"
+          type="button"
+        >
+          Connect Wallet
+        </button>
+      </div>
+    </header>
+    <main class="main-content">
+      <section
+        id="tournament-hero"
+        class="tournament-hero"
+        aria-labelledby="tournament-title"
+      >
+        <div class="tournament-copy">
+          <p class="eyebrow">
+            Tournament #001 · First-Time Promo
+          </p>
+          <h1 id="tournament-title">
+            Play pinball.<br>
+            Take the top spot.
+          </h1>
+          <p class="hero-description">
+            Pay $0.50 per attempt. Your highest verified score counts.
+            The top two players split a 1 SOL prize pool equally.
+          </p>
+          <div class="tournament-stats">
+            <div class="stat">
+              <span class="stat-label">
+                Entry
+              </span>
+              <strong
+                id="entry-price"
+                class="stat-value"
+              >
+                $0.50
+              </strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">
+                Prize Pool
+              </span>
+              <strong
+                id="prize-pool"
+                class="stat-value"
+              >
+                1 SOL
+              </strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">
+                Winners
+              </span>
+              <strong
+                id="winner-count"
+                class="stat-value"
+              >
+                Top 2
+              </strong>
+            </div>
+          </div>
+        </div>
+        <aside
+          class="countdown-panel"
+          aria-labelledby="countdown-heading"
+        >
+          <p
+            id="countdown-heading"
+            class="panel-label"
+          >
+            Tournament ends in
+          </p>
+          <div
+            id="countdown"
+            class="countdown"
+            aria-live="polite"
+          >
+            <div class="countdown-unit">
+              <strong id="countdown-days">00</strong>
+              <span>Days</span>
+            </div>
+            <div class="countdown-unit">
+              <strong id="countdown-hours">00</strong>
+              <span>Hours</span>
+            </div>
+            <div class="countdown-unit">
+              <strong id="countdown-minutes">00</strong>
+              <span>Minutes</span>
+            </div>
+            <div class="countdown-unit">
+              <strong id="countdown-seconds">00</strong>
+              <span>Seconds</span>
+            </div>
+          </div>
+          <p
+            id="tournament-status"
+            class="tournament-status"
+          >
+            Tournament coming soon
+          </p>
+        </aside>
+      </section>
+      <section class="game-layout">
+        <div class="game-column">
+          <section
+            class="game-card"
+            aria-labelledby="game-heading"
+          >
+            <div class="game-toolbar">
+              <div>
+                <p class="panel-label">
+                  Current attempt
+                </p>
+                <h2 id="game-heading">
+                  PumpBall
+                </h2>
+              </div>
+              <div class="game-hud">
+                <div class="hud-item">
+                  <span>Score</span>
+                  <strong id="score-display">
+                    0
+                  </strong>
+                </div>
+                <div class="hud-item">
+                  <span>Ball</span>
+                  <strong id="ball-display">
+                    0 / 3
+                  </strong>
+                </div>
+                <div class="hud-item">
+                  <span>Best</span>
+                  <strong id="personal-best-display">
+                    0
+                  </strong>
+                </div>
+              </div>
+            </div>
+            <div id="game-shell" class="game-shell">
+              <div
+                id="game-container"
+                class="game-container"
+                role="application"
+                aria-label="PumpBall pinball game"
+              ></div>
+              <div
+                id="game-overlay"
+                class="game-overlay"
+              >
+                <div
+                  id="game-start-panel"
+                  class="overlay-panel"
+                >
+                  <p class="eyebrow">
+                    Tournament attempt
+                  </p>
+                  <h2>
+                    Ready to launch?
+                  </h2>
+                  <p>
+                    Connect your wallet and purchase one attempt to start.
+                    Only your highest score will appear on the leaderboard.
+                  </p>
+                  <button
+                    id="purchase-play-button"
+                    class="button button-primary"
+                    type="button"
+                  >
+                    Play for $0.50
+                  </button>
+                  <button
+                    id="free-test-button"
+                    class="button button-text"
+                    type="button"
+                  >
+                    Start free test game
+                  </button>
+                  <p
+                    id="play-feedback"
+                    class="feedback-message"
+                    aria-live="polite"
+                  ></p>
+                </div>
+                <div
+                  id="game-over-panel"
+                  class="overlay-panel"
+                  hidden
+                >
+                  <p class="eyebrow">
+                    Attempt complete
+                  </p>
+                  <h2>
+                    Final score
+                  </h2>
+                  <strong
+                    id="final-score-display"
+                    class="final-score"
+                  >
+                    0
+                  </strong>
+                  <p id="rank-feedback">
+                    Your verified rank will appear here.
+                  </p>
+                  <button
+                    id="play-again-button"
+                    class="button button-primary"
+                    type="button"
+                  >
+                    Play Again for $0.50
+                  </button>
+                  <button
+                    id="return-to-leaderboard-button"
+                    class="button button-text"
+                    type="button"
+                  >
+                    View Leaderboard
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="game-controls">
+              <div class="control-instruction">
+                <span class="control-key">
+                  Left
+                </span>
+                <span>
+                  Left flipper
+                </span>
+              </div>
+              <div class="control-instruction">
+                <span class="control-key">
+                  Right
+                </span>
+                <span>
+                  Right flipper
+                </span>
+              </div>
+              <div class="control-instruction">
+                <span class="control-key">
+                  Hold
+                </span>
+                <span>
+                  Charge launcher
+                </span>
+              </div>
+            </div>
+          </section>
+          <section
+            class="rules-card"
+            aria-labelledby="rules-heading"
+          >
+            <div class="section-heading">
+              <div>
+                <p class="panel-label">
+                  Tournament format
+                </p>
+                <h2 id="rules-heading">
+                  How it works
+                </h2>
+              </div>
+            </div>
+            <div class="rules-grid">
+              <article class="rule">
+                <span class="rule-number">
+                  01
+                </span>
+                <h3>
+                  Purchase an attempt
+                </h3>
+                <p>
+                  Each verified $0.50 payment unlocks one complete
+                  three-ball game.
+                </p>
+              </article>
+              <article class="rule">
+                <span class="rule-number">
+                  02
+                </span>
+                <h3>
+                  Set your best score
+                </h3>
+                <p>
+                  Play as many times as you want. Only your highest
+                  verified score counts.
+                </p>
+              </article>
+              <article class="rule">
+                <span class="rule-number">
+                  03
+                </span>
+                <h3>
+                  Finish in the top two
+                </h3>
+                <p>
+                  First and second place each receive 0.5 SOL after
+                  the tournament closes.
+                </p>
+              </article>
+            </div>
+          </section>
+        </div>
+        <aside
+          id="leaderboard-section"
+          class="leaderboard-card"
+          aria-labelledby="leaderboard-heading"
+        >
+          <div class="section-heading">
+            <div>
+              <p class="panel-label">
+                Live standings
+              </p>
+              <h2 id="leaderboard-heading">
+                Leaderboard
+              </h2>
+            </div>
+            <button
+              id="refresh-leaderboard-button"
+              class="icon-button"
+              type="button"
+              aria-label="Refresh leaderboard"
+            >
+              ↻
+            </button>
+          </div>
+          <div class="leaderboard-summary">
+            <div>
+              <span>
+                Your rank
+              </span>
+              <strong id="player-rank">
+                —
+              </strong>
+            </div>
+            <div>
+              <span>
+                Your best
+              </span>
+              <strong id="player-best-score">
+                0
+              </strong>
+            </div>
+            <div>
+              <span>
+                Attempts
+              </span>
+              <strong id="player-attempt-count">
+                0
+              </strong>
+            </div>
+          </div>
+          <div class="leaderboard-table-wrap">
+            <table class="leaderboard-table">
+              <thead>
+                <tr>
+                  <th scope="col">
+                    Rank
+                  </th>
+                  <th scope="col">
+                    Player
+                  </th>
+                  <th scope="col">
+                    Score
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="leaderboard-body">
+                <tr class="leaderboard-empty-row">
+                  <td colspan="3">
+                    No verified scores yet.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p
+            id="leaderboard-feedback"
+            class="feedback-message"
+            aria-live="polite"
+          ></p>
+        </aside>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <p>
+        PumpBall Tournament #001
+      </p>
+      <nav aria-label="Footer">
+        <button
+          id="open-rules-button"
+          class="footer-link"
+          type="button"
+        >
+          Official Rules
+        </button>
+        <button
+          id="open-fair-play-button"
+          class="footer-link"
+          type="button"
+        >
+          Fair Play
+        </button>
+        <button
+          id="open-support-button"
+          class="footer-link"
+          type="button"
+        >
+          Support
+        </button>
+      </nav>
+    </footer>
+  </div>
+  <dialog id="information-dialog">
+    <div class="dialog-content">
+      <button
+        id="close-dialog-button"
+        class="dialog-close"
+        type="button"
+        aria-label="Close dialog"
+      >
+        ×
+      </button>
+      <h2 id="dialog-title">
+        PumpBall
+      </h2>
+      <div id="dialog-body"></div>
+    </div>
+  </dialog>
+  <script
+    src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"
+    defer
+  ></script>
+  <script src="config.js" defer></script>
+  <script src="payments.js" defer></script>
+  <script src="leaderboard.js" defer></script>
+  <script src="game.js" defer></script>
+</body>
+</html>
