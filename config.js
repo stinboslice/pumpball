@@ -107,8 +107,7 @@
   },
 
   reference: {
-    collisionMap: "collision-map.png"
-  },
+    collisionMap: "reference/collision-map.png"  },
 
   fallbackGraphics: true
 },
