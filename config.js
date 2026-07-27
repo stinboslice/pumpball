@@ -87,6 +87,31 @@
     transactionExpirationMs: 10 * 60 * 1000
   }
 },
+
+    assets: {
+  basePath: "assets/",
+
+  required: {
+    playfield: "playfield.png",
+    ball: "ball.png",
+
+    flipperLeft: "flipper-left.png",
+    flipperRight: "flipper-right.png",
+
+    bumper: "bumper.png",
+
+    slingshotLeft: "slingshot-left.png",
+    slingshotRight: "slingshot-right.png",
+
+    reactorJackpot: "reactor-jackpot.png"
+  },
+
+  reference: {
+    collisionMap: "collision-map.png"
+  },
+
+  fallbackGraphics: true
+},
     game: {
       /**
        * Internal game resolution.
