@@ -2,26 +2,20 @@
 
 /**
  * PumpBall
- * Single-table competitive pinball game.
+ * Competitive three-ball browser pinball game.
  *
- * Core loop:
- * authorize attempt
- * → consume one play credit
- * → play three balls
- * → submit final score
- * → update leaderboard only when score is higher
- *
- * Required globals:
- * window.PUMPBALL_CONFIG
- * window.PUMPBALL_UTILS
- * window.PumpBallPayments
- * window.PumpBallLeaderboard
- * Phaser 3.90+
+ * Dependencies loaded before this file:
+ *   - Phaser 3.90+
+ *   - config.js       -> window.PUMPBALL_CONFIG
+ *   - payments.js     -> window.PumpBallPayments
+ *   - leaderboard.js  -> window.PumpBallLeaderboard
  */
 
 (() => {
   const CONFIG = window.PUMPBALL_CONFIG;
-  const UTILS = window.PUMPBALL_UTILS;
+  const UTILS = window.PUMPBALL_UTILS || {};
+  const Payments = window.PumpBallPayments;
+  const Leaderboard = window.PumpBallLeaderboard;
 
   if (!CONFIG) {
     throw new Error(
@@ -35,136 +29,46 @@
     );
   }
 
-  const WORLD = {
-    width: 1024,
-    height: 1820
-  };
+  const WORLD = Object.freeze({
+    width: Number(CONFIG.game?.width) || 720,
+    height: Number(CONFIG.game?.height) || 1280
+  });
 
-  const DEPTH = {
+  const DEPTH = Object.freeze({
     playfield: 0,
-    staticDecor: 5,
-    effectsBehind: 8,
-    mechanisms: 10,
-    ballTrail: 18,
-    ball: 20,
-    effectsFront: 30,
+    decor: 4,
+    mechanisms: 12,
+    trail: 18,
+    ball: 22,
+    effects: 30,
     text: 40,
-    flash: 100
-  };
+    flash: 100,
+    debug: 200
+  });
 
-  const LABELS = {
+  const LABELS = Object.freeze({
     ball: "ball",
-    drain: "drain",
     wall: "wall",
+    drain: "drain",
     bumper: "bumper",
     slingshotLeft: "slingshot-left",
     slingshotRight: "slingshot-right",
     reactor: "reactor",
-    launcherSensor: "launcher-sensor"
-  };
-
-  const SCORE_VALUES = {
-    bumper: 100,
-    slingshot: 50,
-    reactor: 500,
-    passiveRail: 5
-  };
-
-  const DEFAULTS = {
-    ballsPerGame: 3,
-
-    ball: {
-      diameter: 42,
-      restitution: 0.64,
-      friction: 0.002,
-      frictionAir: 0.012,
-      density: 0.0022,
-      maxSpeed: 34,
-      minActiveSpeed: 0.5
-    },
-
-    flippers: {
-      width: 198,
-      height: 58,
-
-      left: {
-        x: 338,
-        y: 1640,
-        restingAngle: -0.52,
-        activeAngle: -1.02
-      },
-
-      right: {
-        x: 686,
-        y: 1640,
-        restingAngle: 0.52,
-        activeAngle: 1.02
-      },
-
-      angularSpeed: 0.22,
-      returnSpeed: 0.16
-    },
-
-    launcher: {
-      x: 913,
-      y: 1600,
-      ballX: 914,
-      ballY: 1544,
-      minimumForce: 18,
-      maximumForce: 43,
-      chargeMs: 1200
-    },
-
-    drain: {
-      x: 512,
-      y: 1778,
-      width: 285,
-      height: 80
-    }
-  };
-
-  const TABLE = {
-    bumpers: [
-      { x: 405, y: 455 },
-      { x: 618, y: 455 },
-      { x: 405, y: 660 },
-      { x: 618, y: 660 }
-    ],
-
-    slingshots: {
-      left: {
-        x: 267,
-        y: 1382,
-        rotation: 0
-      },
-
-      right: {
-        x: 757,
-        y: 1382,
-        rotation: 0
-      }
-    },
-
-    reactor: {
-      x: 512,
-      y: 1180
-    },
-
-    launcherLane: {
-      leftX: 864,
-      rightX: 958,
-      topY: 95,
-      bottomY: 1694
-    }
-  };
+    flipperLeft: "flipper-left",
+    flipperRight: "flipper-right",
+    launcherSupport: "launcher-support"
+  });
 
   const runtime = {
-    phaserGame: null,
-    scene: null,
     initialized: false,
     startingAttempt: false,
+
+    game: null,
+    scene: null,
+
     currentSessionId: null,
     currentCredit: null,
+
     latestError: null
   };
 
@@ -194,3267 +98,13 @@
     winnerCount: null,
 
     tournamentLabel: null,
-    footerTournamentLabel: null
+    footerTournamentLabel: null,
+
+    countdownDays: null,
+    countdownHours: null,
+    countdownMinutes: null,
+    countdownSeconds: null
   };
-
-  function getAssetPath(file) {
-    return `${CONFIG.assets?.basePath || "assets/"}${file}`;
-  }
-
-  function getRequiredAsset(name, fallback) {
-    return (
-      CONFIG.assets?.required?.[name] ||
-      fallback
-    );
-  }
-
-  function getBallsPerGame() {
-    return (
-      CONFIG.gameplay?.ballsPerGame ||
-      CONFIG.game?.ballsPerGame ||
-      DEFAULTS.ballsPerGame
-    );
-  }
-
-  function formatScore(value) {
-    const score = Math.max(
-      0,
-      Math.floor(Number(value) || 0)
-    );
-
-    if (
-      UTILS &&
-      typeof UTILS.formatScore === "function"
-    ) {
-      return UTILS.formatScore(score);
-    }
-
-    return score.toLocaleString("en-US");
-  }
-
-  function createSessionId() {
-    if (
-      UTILS &&
-      typeof UTILS.createSessionId === "function"
-    ) {
-      return UTILS.createSessionId();
-    }
-
-    if (
-      window.crypto &&
-      typeof window.crypto.randomUUID === "function"
-    ) {
-      return `pumpball-${window.crypto.randomUUID()}`;
-    }
-
-    return [
-      "pumpball",
-      Date.now().toString(36),
-      Math.random().toString(36).slice(2, 10)
-    ].join("-");
-  }
-
-  function setPlayFeedback(
-    message = "",
-    type = "neutral"
-  ) {
-    if (!dom.playFeedback) {
-      return;
-    }
-
-    dom.playFeedback.textContent = message;
-    dom.playFeedback.dataset.type = type;
-  }
-
-  function setButtonsBusy(isBusy) {
-    const buttons = [
-      dom.purchasePlayButton,
-      dom.freeTestButton,
-      dom.playAgainButton,
-      dom.connectWalletButton
-    ];
-
-    buttons.forEach((button) => {
-      if (!button) {
-        return;
-      }
-
-      button.disabled = Boolean(isBusy);
-
-      if (isBusy) {
-        button.setAttribute("aria-busy", "true");
-      } else {
-        button.removeAttribute("aria-busy");
-      }
-    });
-  }
-
-  function showStartPanel() {
-    if (dom.gameStartPanel) {
-      dom.gameStartPanel.hidden = false;
-    }
-
-    if (dom.gameOverPanel) {
-      dom.gameOverPanel.hidden = true;
-    }
-
-    if (dom.gameOverlay) {
-      dom.gameOverlay.hidden = false;
-      dom.gameOverlay.classList.remove("is-hidden");
-    }
-  }
-
-  function hideOverlay() {
-    if (!dom.gameOverlay) {
-      return;
-    }
-
-    dom.gameOverlay.classList.add("is-hidden");
-
-    window.setTimeout(() => {
-      if (
-        runtime.scene &&
-        runtime.scene.gameState.playing
-      ) {
-        dom.gameOverlay.hidden = true;
-      }
-    }, 220);
-  }
-
-  function showGameOverPanel({
-    score,
-    rank,
-    improved,
-    previousBest
-  }) {
-    if (dom.gameStartPanel) {
-      dom.gameStartPanel.hidden = true;
-    }
-
-    if (dom.gameOverPanel) {
-      dom.gameOverPanel.hidden = false;
-    }
-
-    if (dom.gameOverlay) {
-      dom.gameOverlay.hidden = false;
-
-      requestAnimationFrame(() => {
-        dom.gameOverlay.classList.remove(
-          "is-hidden"
-        );
-      });
-    }
-
-    if (dom.finalScoreDisplay) {
-      dom.finalScoreDisplay.textContent =
-        formatScore(score);
-    }
-
-    if (dom.rankFeedback) {
-      if (improved && rank) {
-        dom.rankFeedback.textContent =
-          `New personal best. You are ranked #${rank}.`;
-      } else if (improved) {
-        dom.rankFeedback.textContent =
-          "New personal best recorded.";
-      } else {
-        dom.rankFeedback.textContent =
-          `Attempt recorded. Your best remains ${formatScore(
-            previousBest
-          )}.`;
-      }
-    }
-  }
-
-  function updateWalletUi() {
-    const paymentState =
-      window.PumpBallPayments?.getState?.();
-
-    if (!paymentState) {
-      return;
-    }
-
-    if (dom.walletStatus) {
-      dom.walletStatus.textContent =
-        paymentState.walletConnected
-          ? paymentState.shortenedWalletAddress ||
-            "Wallet connected"
-          : "Wallet not connected";
-    }
-
-    if (dom.connectWalletButton) {
-      dom.connectWalletButton.textContent =
-        paymentState.walletConnected
-          ? "Wallet Connected"
-          : "Connect Wallet";
-    }
-  }
-
-  function updateTournamentUi() {
-    const tournament = CONFIG.tournament;
-
-    if (!tournament) {
-      return;
-    }
-
-    if (dom.entryPrice) {
-      dom.entryPrice.textContent =
-        tournament.entryPriceDisplay ||
-        `${tournament.entryPriceSol} SOL`;
-    }
-
-    if (dom.prizePool) {
-      dom.prizePool.textContent =
-        tournament.prizePoolDisplay ||
-        `${tournament.prizePoolSol} SOL`;
-    }
-
-    if (dom.winnerCount) {
-      dom.winnerCount.textContent =
-        `Top ${tournament.winnerCount || 2}`;
-    }
-
-    if (dom.tournamentLabel) {
-      dom.tournamentLabel.textContent = [
-        tournament.name,
-        tournament.promotionalLabel
-      ]
-        .filter(Boolean)
-        .join(" · ");
-    }
-
-    if (dom.footerTournamentLabel) {
-      dom.footerTournamentLabel.textContent =
-        tournament.name;
-    }
-
-    const entryDisplay =
-      tournament.entryPriceDisplay ||
-      `${tournament.entryPriceSol} SOL`;
-
-    if (dom.purchasePlayButton) {
-      dom.purchasePlayButton.textContent =
-        `Play for ${entryDisplay}`;
-    }
-
-    if (dom.playAgainButton) {
-      dom.playAgainButton.textContent =
-        `Play Again for ${entryDisplay}`;
-    }
-  }
-
-  class PumpBallScene extends Phaser.Scene {
-    constructor() {
-      super({
-        key: "PumpBallScene"
-      });
-
-      this.gameState = {
-        ready: false,
-        playing: false,
-        paused: false,
-        gameOver: false,
-
-        score: 0,
-        ballNumber: 0,
-        ballsRemaining: getBallsPerGame(),
-
-        sessionId: null,
-        credit: null,
-
-        ballInPlay: false,
-        ballLaunched: false,
-        launcherCharging: false,
-        launcherChargeStartedAt: 0,
-
-        leftFlipperPressed: false,
-        rightFlipperPressed: false,
-
-        lastBallMotionAt: 0,
-        lastBallPosition: null,
-
-        drainLocked: false
-      };
-
-      this.ball = null;
-
-      this.playfield = null;
-      this.playfieldGlow = null;
-      this.tableFlash = null;
-
-      this.leftFlipper = null;
-      this.rightFlipper = null;
-
-      this.leftFlipperBody = null;
-      this.rightFlipperBody = null;
-
-      this.leftSlingshot = null;
-      this.rightSlingshot = null;
-
-      this.bumpers = [];
-      this.reactor = null;
-      this.reactorGlow = null;
-
-      this.staticBodies = [];
-      this.particlePool = [];
-      this.trailPool = [];
-
-      this.keys = {};
-      this.touchZones = {};
-
-      this.debugGraphics = null;
-    }
-
-    preload() {
-      this.load.image(
-        "playfield",
-        getAssetPath(
-          getRequiredAsset(
-            "playfield",
-            "playfield.png"
-          )
-        )
-      );
-
-      this.load.image(
-        "ball",
-        getAssetPath(
-          getRequiredAsset(
-            "ball",
-            "ball.png"
-          )
-        )
-      );
-
-      this.load.image(
-        "flipperLeft",
-        getAssetPath(
-          getRequiredAsset(
-            "flipperLeft",
-            "flipper-left.png"
-          )
-        )
-      );
-
-      this.load.image(
-        "flipperRight",
-        getAssetPath(
-          getRequiredAsset(
-            "flipperRight",
-            "flipper-right.png"
-          )
-        )
-      );
-
-      this.load.image(
-        "bumper",
-        getAssetPath(
-          getRequiredAsset(
-            "bumper",
-            "bumper.png"
-          )
-        )
-      );
-
-      this.load.image(
-        "slingshotLeft",
-        getAssetPath(
-          getRequiredAsset(
-            "slingshotLeft",
-            "slingshot-left.png"
-          )
-        )
-      );
-
-      this.load.image(
-        "slingshotRight",
-        getAssetPath(
-          getRequiredAsset(
-            "slingshotRight",
-            "slingshot-right.png"
-          )
-        )
-      );
-
-      this.load.image(
-        "reactorJackpot",
-        getAssetPath(
-          getRequiredAsset(
-            "reactorJackpot",
-            "reactor-jackpot.png"
-          )
-        )
-      );
-
-      if (
-        CONFIG.app?.debug &&
-        CONFIG.assets?.reference?.collisionMap
-      ) {
-        this.load.image(
-          "collisionMap",
-          getAssetPath(
-            CONFIG.assets.reference.collisionMap
-          )
-        );
-      }
-
-      this.load.on("loaderror", (file) => {
-        console.error(
-          `[PumpBall] Asset failed to load: ${file.src}`
-        );
-      });
-    }
-
-    create() {
-      runtime.scene = this;
-
-      this.matter.world.setGravity(
-        0,
-        0.92,
-        1
-      );
-
-      this.matter.world.engine.positionIterations =
-        12;
-
-      this.matter.world.engine.velocityIterations =
-        10;
-
-      this.matter.world.engine.constraintIterations =
-        4;
-
-      this.createBackground();
-      this.createStaticTableGeometry();
-      this.createMechanisms();
-      this.createEffects();
-      this.createControls();
-      this.bindMatterEvents();
-
-      if (
-        CONFIG.app?.debug &&
-        this.textures.exists("collisionMap")
-      ) {
-        this.add
-          .image(
-            WORLD.width / 2,
-            WORLD.height / 2,
-            "collisionMap"
-          )
-          .setDisplaySize(
-            WORLD.width,
-            WORLD.height
-          )
-          .setAlpha(0.28)
-          .setDepth(DEPTH.effectsFront);
-      }
-
-      this.gameState.ready = true;
-
-      this.updateHud();
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:game-ready"
-        )
-      );
-    }
-
-    createBackground() {
-      this.playfield = this.add
-        .image(
-          WORLD.width / 2,
-          WORLD.height / 2,
-          "playfield"
-        )
-        .setDisplaySize(
-          WORLD.width,
-          WORLD.height
-        )
-        .setDepth(DEPTH.playfield);
-
-      this.playfieldGlow = this.add
-        .image(
-          WORLD.width / 2,
-          WORLD.height / 2,
-          "playfield"
-        )
-        .setDisplaySize(
-          WORLD.width,
-          WORLD.height
-        )
-        .setTint(0x7c3cff)
-        .setAlpha(0.035)
-        .setBlendMode(
-          Phaser.BlendModes.ADD
-        )
-        .setDepth(DEPTH.effectsBehind);
-
-      this.tweens.add({
-        targets: this.playfieldGlow,
-        alpha: {
-          from: 0.025,
-          to: 0.075
-        },
-        duration: 1800,
-        yoyo: true,
-        repeat: -1,
-        ease: "Sine.InOut"
-      });
-    }
-
-    addStaticRectangle(
-      x,
-      y,
-      width,
-      height,
-      options = {}
-    ) {
-      const body =
-        this.matter.add.rectangle(
-          x,
-          y,
-          width,
-          height,
-          {
-            isStatic: true,
-            label:
-              options.label ||
-              LABELS.wall,
-
-            angle:
-              options.angle || 0,
-
-            restitution:
-              options.restitution ?? 0.42,
-
-            friction:
-              options.friction ?? 0.01,
-
-            chamfer:
-              options.chamfer
-                ? {
-                    radius:
-                      options.chamfer
-                  }
-                : undefined
-          }
-        );
-
-      this.staticBodies.push(body);
-
-      return body;
-    }
-
-    addStaticCircle(
-      x,
-      y,
-      radius,
-      options = {}
-    ) {
-      const body =
-        this.matter.add.circle(
-          x,
-          y,
-          radius,
-          {
-            isStatic: true,
-            label:
-              options.label ||
-              LABELS.wall,
-
-            isSensor:
-              Boolean(options.isSensor),
-
-            restitution:
-              options.restitution ?? 0.5,
-
-            friction:
-              options.friction ?? 0.005
-          }
-        );
-
-      body.gameObjectRef =
-        options.gameObject || null;
-
-      body.scoreValue =
-        options.scoreValue || 0;
-
-      body.effectType =
-        options.effectType || null;
-
-      this.staticBodies.push(body);
-
-      return body;
-    }
-
-    addStaticPolygon(
-      x,
-      y,
-      vertices,
-      options = {}
-    ) {
-      const Matter =
-        Phaser.Physics.Matter.Matter;
-
-      const body =
-        Matter.Bodies.fromVertices(
-          x,
-          y,
-          vertices,
-          {
-            isStatic: true,
-            label:
-              options.label ||
-              LABELS.wall,
-
-            restitution:
-              options.restitution ?? 0.48,
-
-            friction:
-              options.friction ?? 0.008
-          },
-          true
-        );
-
-      body.gameObjectRef =
-        options.gameObject || null;
-
-      body.scoreValue =
-        options.scoreValue || 0;
-
-      body.effectType =
-        options.effectType || null;
-
-      this.matter.world.add(body);
-      this.staticBodies.push(body);
-
-      return body;
-    }
-
-    createStaticTableGeometry() {
-      /*
-       * Outer table boundaries.
-       */
-      this.addStaticRectangle(
-        29,
-        910,
-        58,
-        1720,
-        {
-          chamfer: 24
-        }
-      );
-
-      this.addStaticRectangle(
-        995,
-        910,
-        58,
-        1720,
-        {
-          chamfer: 24
-        }
-      );
-
-      this.addStaticRectangle(
-        512,
-        26,
-        936,
-        52,
-        {
-          chamfer: 20
-        }
-      );
-
-      /*
-       * Lower apron and drain guides.
-       */
-      this.addStaticRectangle(
-        191,
-        1640,
-        248,
-        24,
-        {
-          angle: 0.50,
-          restitution: 0.38
-        }
-      );
-
-      this.addStaticRectangle(
-        833,
-        1640,
-        248,
-        24,
-        {
-          angle: -0.50,
-          restitution: 0.38
-        }
-      );
-
-      this.addStaticRectangle(
-        112,
-        1520,
-        236,
-        20,
-        {
-          angle: 0.35
-        }
-      );
-
-      this.addStaticRectangle(
-        912,
-        1520,
-        236,
-        20,
-        {
-          angle: -0.35
-        }
-      );
-
-      /*
-       * Left and right inlane guides.
-       */
-      this.addStaticRectangle(
-        176,
-        1456,
-        290,
-        18,
-        {
-          angle: 0.18
-        }
-      );
-
-      this.addStaticRectangle(
-        848,
-        1456,
-        290,
-        18,
-        {
-          angle: -0.18
-        }
-      );
-
-      /*
-       * Launcher lane.
-       */
-      this.addStaticRectangle(
-        TABLE.launcherLane.leftX,
-        931,
-        18,
-        1515
-      );
-
-      this.addStaticRectangle(
-        TABLE.launcherLane.rightX,
-        931,
-        18,
-        1515
-      );
-
-      /*
-       * Upper launcher return curve approximation.
-       */
-      [
-        [909, 150, 115, 18, -0.72],
-        [834, 88, 122, 18, -0.20],
-        [746, 77, 108, 18, 0.03],
-        [650, 76, 112, 18, 0.02]
-      ].forEach(
-        ([x, y, width, height, angle]) => {
-          this.addStaticRectangle(
-            x,
-            y,
-            width,
-            height,
-            {
-              angle
-            }
-          );
-        }
-      );
-
-      /*
-       * Upper left orbit.
-       */
-      [
-        [125, 170, 160, 18, -0.76],
-        [87, 293, 185, 18, -1.15],
-        [98, 460, 204, 18, -1.38],
-        [111, 640, 218, 18, -1.45],
-        [164, 810, 210, 18, -1.10]
-      ].forEach(
-        ([x, y, width, height, angle]) => {
-          this.addStaticRectangle(
-            x,
-            y,
-            width,
-            height,
-            {
-              angle
-            }
-          );
-        }
-      );
-
-      /*
-       * Upper center separators.
-       */
-      this.addStaticRectangle(
-        341,
-        260,
-        160,
-        18,
-        {
-          angle: -0.15
-        }
-      );
-
-      this.addStaticRectangle(
-        706,
-        299,
-        164,
-        18,
-        {
-          angle: 0.78
-        }
-      );
-
-      /*
-       * Mid-table rails.
-       */
-      this.addStaticRectangle(
-        221,
-        907,
-        245,
-        20,
-        {
-          angle: -0.85
-        }
-      );
-
-      this.addStaticRectangle(
-        775,
-        907,
-        245,
-        20,
-        {
-          angle: 0.85
-        }
-      );
-
-      this.addStaticRectangle(
-        202,
-        1188,
-        250,
-        20,
-        {
-          angle: 0.88
-        }
-      );
-
-      this.addStaticRectangle(
-        822,
-        1188,
-        250,
-        20,
-        {
-          angle: -0.88
-        }
-      );
-
-      /*
-       * Center divider posts.
-       */
-      [
-        [470, 785],
-        [554, 785],
-        [448, 846],
-        [576, 846]
-      ].forEach(([x, y]) => {
-        this.addStaticCircle(
-          x,
-          y,
-          15,
-          {
-            restitution: 0.7
-          }
-        );
-      });
-
-      /*
-       * Static side posts.
-       */
-      [
-        [104, 1020],
-        [164, 1110],
-        [164, 1280],
-        [920, 1020],
-        [860, 1110],
-        [860, 1280],
-        [250, 1260],
-        [774, 1260],
-        [325, 1500],
-        [699, 1500]
-      ].forEach(([x, y]) => {
-        this.addStaticCircle(
-          x,
-          y,
-          13,
-          {
-            restitution: 0.68
-          }
-        );
-      });
-
-      /*
-       * Drain sensor.
-       */
-      this.addStaticRectangle(
-        DEFAULTS.drain.x,
-        DEFAULTS.drain.y,
-        DEFAULTS.drain.width,
-        DEFAULTS.drain.height,
-        {
-          label: LABELS.drain
-        }
-      ).isSensor = true;
-    }
-
-    createMechanisms() {
-      this.createBumpers();
-      this.createSlingshots();
-      this.createReactor();
-      this.createFlippers();
-      this.createLauncher();
-    }
-
-    createBumpers() {
-      TABLE.bumpers.forEach(
-        (position, index) => {
-          const glow = this.add
-            .image(
-              position.x,
-              position.y,
-              "bumper"
-            )
-            .setDisplaySize(154, 154)
-            .setTint(
-              index % 2 === 0
-                ? 0x59ff61
-                : 0x9a52ff
-            )
-            .setAlpha(0.18)
-            .setBlendMode(
-              Phaser.BlendModes.ADD
-            )
-            .setDepth(
-              DEPTH.effectsBehind
-            );
-
-          const sprite = this.add
-            .image(
-              position.x,
-              position.y,
-              "bumper"
-            )
-            .setDisplaySize(138, 138)
-            .setDepth(DEPTH.mechanisms);
-
-          sprite.glow = glow;
-          sprite.bumperIndex = index;
-
-          const body = this.addStaticCircle(
-            position.x,
-            position.y,
-            58,
-            {
-              label: LABELS.bumper,
-              restitution: 1.18,
-              gameObject: sprite,
-              scoreValue: SCORE_VALUES.bumper,
-              effectType: "bumper"
-            }
-          );
-
-          body.bumperIndex = index;
-          sprite.matterBody = body;
-
-          this.bumpers.push(sprite);
-
-          this.tweens.add({
-            targets: glow,
-            scaleX: {
-              from: 1,
-              to: 1.09
-            },
-            scaleY: {
-              from: 1,
-              to: 1.09
-            },
-            alpha: {
-              from: 0.12,
-              to: 0.28
-            },
-            duration:
-              900 + index * 110,
-            yoyo: true,
-            repeat: -1,
-            ease: "Sine.InOut"
-          });
-        }
-      );
-    }
-
-    createSlingshots() {
-      this.leftSlingshot = this.add
-        .image(
-          TABLE.slingshots.left.x,
-          TABLE.slingshots.left.y,
-          "slingshotLeft"
-        )
-        .setDisplaySize(196, 196)
-        .setDepth(DEPTH.mechanisms);
-
-      this.rightSlingshot = this.add
-        .image(
-          TABLE.slingshots.right.x,
-          TABLE.slingshots.right.y,
-          "slingshotRight"
-        )
-        .setDisplaySize(196, 196)
-        .setDepth(DEPTH.mechanisms);
-
-      const leftVertices = [
-        { x: -86, y: -61 },
-        { x: 82, y: -61 },
-        { x: -2, y: 78 }
-      ];
-
-      const rightVertices = [
-        { x: -82, y: -61 },
-        { x: 86, y: -61 },
-        { x: 2, y: 78 }
-      ];
-
-      const leftBody =
-        this.addStaticPolygon(
-          TABLE.slingshots.left.x,
-          TABLE.slingshots.left.y,
-          leftVertices,
-          {
-            label:
-              LABELS.slingshotLeft,
-
-            restitution: 1.04,
-            gameObject:
-              this.leftSlingshot,
-
-            scoreValue:
-              SCORE_VALUES.slingshot,
-
-            effectType:
-              "slingshot-left"
-          }
-        );
-
-      const rightBody =
-        this.addStaticPolygon(
-          TABLE.slingshots.right.x,
-          TABLE.slingshots.right.y,
-          rightVertices,
-          {
-            label:
-              LABELS.slingshotRight,
-
-            restitution: 1.04,
-            gameObject:
-              this.rightSlingshot,
-
-            scoreValue:
-              SCORE_VALUES.slingshot,
-
-            effectType:
-              "slingshot-right"
-          }
-        );
-
-      this.leftSlingshot.matterBody =
-        leftBody;
-
-      this.rightSlingshot.matterBody =
-        rightBody;
-    }
-
-    createReactor() {
-      this.reactorGlow = this.add
-        .image(
-          TABLE.reactor.x,
-          TABLE.reactor.y,
-          "reactorJackpot"
-        )
-        .setDisplaySize(320, 320)
-        .setTint(0x9b4dff)
-        .setAlpha(0.25)
-        .setBlendMode(
-          Phaser.BlendModes.ADD
-        )
-        .setDepth(DEPTH.effectsBehind);
-
-      this.reactor = this.add
-        .image(
-          TABLE.reactor.x,
-          TABLE.reactor.y,
-          "reactorJackpot"
-        )
-        .setDisplaySize(286, 286)
-        .setDepth(DEPTH.mechanisms);
-
-      const body = this.addStaticCircle(
-        TABLE.reactor.x,
-        TABLE.reactor.y,
-        124,
-        {
-          label: LABELS.reactor,
-          restitution: 0.88,
-          gameObject: this.reactor,
-          scoreValue: SCORE_VALUES.reactor,
-          effectType: "reactor"
-        }
-      );
-
-      this.reactor.matterBody = body;
-
-      this.tweens.add({
-        targets: this.reactor,
-        angle: 360,
-        duration: 16000,
-        repeat: -1,
-        ease: "Linear"
-      });
-
-      this.tweens.add({
-        targets: this.reactorGlow,
-        scaleX: {
-          from: 0.96,
-          to: 1.08
-        },
-        scaleY: {
-          from: 0.96,
-          to: 1.08
-        },
-        alpha: {
-          from: 0.16,
-          to: 0.34
-        },
-        duration: 820,
-        yoyo: true,
-        repeat: -1,
-        ease: "Sine.InOut"
-      });
-    }
-
-    createFlippers() {
-      this.leftFlipper =
-        this.matter.add.image(
-          DEFAULTS.flippers.left.x,
-          DEFAULTS.flippers.left.y,
-          "flipperLeft",
-          null,
-          {
-            label: "flipper-left",
-            friction: 0.001,
-            frictionAir: 0.01,
-            restitution: 0.12,
-            isStatic: true
-          }
-        );
-
-      this.leftFlipper
-        .setDisplaySize(
-          DEFAULTS.flippers.width,
-          DEFAULTS.flippers.height
-        )
-        .setOrigin(0.18, 0.5)
-        .setDepth(DEPTH.mechanisms)
-        .setRotation(
-          DEFAULTS.flippers.left
-            .restingAngle
-        );
-
-      this.rightFlipper =
-        this.matter.add.image(
-          DEFAULTS.flippers.right.x,
-          DEFAULTS.flippers.right.y,
-          "flipperRight",
-          null,
-          {
-            label: "flipper-right",
-            friction: 0.001,
-            frictionAir: 0.01,
-            restitution: 0.12,
-            isStatic: true
-          }
-        );
-
-      this.rightFlipper
-        .setDisplaySize(
-          DEFAULTS.flippers.width,
-          DEFAULTS.flippers.height
-        )
-        .setOrigin(0.82, 0.5)
-        .setDepth(DEPTH.mechanisms)
-        .setRotation(
-          DEFAULTS.flippers.right
-            .restingAngle
-        );
-
-      this.leftFlipper.body.isFlipper = true;
-      this.leftFlipper.body.flipperSide =
-        "left";
-
-      this.rightFlipper.body.isFlipper = true;
-      this.rightFlipper.body.flipperSide =
-        "right";
-    }
-
-    createLauncher() {
-      this.launcherTrack = this.add
-        .rectangle(
-          DEFAULTS.launcher.x,
-          DEFAULTS.launcher.y,
-          40,
-          225,
-          0x10141a,
-          0.7
-        )
-        .setStrokeStyle(
-          3,
-          0x9d50ff,
-          0.8
-        )
-        .setDepth(DEPTH.staticDecor);
-
-      this.launcherSpring = this.add
-        .rectangle(
-          DEFAULTS.launcher.x,
-          DEFAULTS.launcher.y + 70,
-          28,
-          90,
-          0x7f42e6,
-          0.75
-        )
-        .setDepth(DEPTH.mechanisms);
-
-      this.launcherCap = this.add
-        .circle(
-          DEFAULTS.launcher.x,
-          DEFAULTS.launcher.y + 18,
-          24,
-          0x111111,
-          1
-        )
-        .setStrokeStyle(
-          5,
-          0xd3d7dd,
-          1
-        )
-        .setDepth(DEPTH.mechanisms);
-
-      this.launcherMeter = this.add
-        .rectangle(
-          DEFAULTS.launcher.x,
-          DEFAULTS.launcher.y + 20,
-          10,
-          0,
-          0x64ff6a,
-          0.92
-        )
-        .setOrigin(0.5, 1)
-        .setDepth(DEPTH.effectsFront);
-    }
-
-    createEffects() {
-      this.tableFlash = this.add
-        .rectangle(
-          WORLD.width / 2,
-          WORLD.height / 2,
-          WORLD.width,
-          WORLD.height,
-          0xffffff,
-          0
-        )
-        .setDepth(DEPTH.flash)
-        .setBlendMode(
-          Phaser.BlendModes.ADD
-        );
-
-      this.vignette = this.add
-        .rectangle(
-          WORLD.width / 2,
-          WORLD.height / 2,
-          WORLD.width,
-          WORLD.height,
-          0x000000,
-          0
-        )
-        .setDepth(DEPTH.flash + 1);
-    }
-
-    createControls() {
-      this.keys.left =
-        this.input.keyboard.addKey(
-          Phaser.Input.Keyboard.KeyCodes.LEFT
-        );
-
-      this.keys.leftAlt =
-        this.input.keyboard.addKey(
-          Phaser.Input.Keyboard.KeyCodes.A
-        );
-
-      this.keys.right =
-        this.input.keyboard.addKey(
-          Phaser.Input.Keyboard.KeyCodes.RIGHT
-        );
-
-      this.keys.rightAlt =
-        this.input.keyboard.addKey(
-          Phaser.Input.Keyboard.KeyCodes.D
-        );
-
-      this.keys.launch =
-        this.input.keyboard.addKey(
-          Phaser.Input.Keyboard.KeyCodes.SPACE
-        );
-
-      this.keys.launchAlt =
-        this.input.keyboard.addKey(
-          Phaser.Input.Keyboard.KeyCodes.DOWN
-        );
-
-      this.input.on(
-        "pointerdown",
-        (pointer) => {
-          if (!this.gameState.playing) {
-            return;
-          }
-
-          const normalizedX =
-            pointer.x /
-            this.scale.displaySize.width;
-
-          const normalizedY =
-            pointer.y /
-            this.scale.displaySize.height;
-
-          if (normalizedY < 0.72) {
-            this.beginLauncherCharge();
-            return;
-          }
-
-          if (normalizedX < 0.5) {
-            this.gameState.leftFlipperPressed =
-              true;
-          } else {
-            this.gameState.rightFlipperPressed =
-              true;
-          }
-        }
-      );
-
-      this.input.on(
-        "pointerup",
-        () => {
-          if (!this.gameState.playing) {
-            return;
-          }
-
-          this.gameState.leftFlipperPressed =
-            false;
-
-          this.gameState.rightFlipperPressed =
-            false;
-
-          if (
-            this.gameState.launcherCharging
-          ) {
-            this.releaseLauncher();
-          }
-        }
-      );
-
-      this.keys.launch.on(
-        "down",
-        () => {
-          this.beginLauncherCharge();
-        }
-      );
-
-      this.keys.launch.on(
-        "up",
-        () => {
-          this.releaseLauncher();
-        }
-      );
-
-      this.keys.launchAlt.on(
-        "down",
-        () => {
-          this.beginLauncherCharge();
-        }
-      );
-
-      this.keys.launchAlt.on(
-        "up",
-        () => {
-          this.releaseLauncher();
-        }
-      );
-    }
-
-    bindMatterEvents() {
-      this.matter.world.on(
-        "collisionstart",
-        (event) => {
-          event.pairs.forEach((pair) => {
-            this.handleCollisionPair(
-              pair.bodyA,
-              pair.bodyB
-            );
-          });
-        }
-      );
-    }
-
-    handleCollisionPair(bodyA, bodyB) {
-      let ballBody = null;
-      let otherBody = null;
-
-      if (bodyA.label === LABELS.ball) {
-        ballBody = bodyA;
-        otherBody = bodyB;
-      } else if (
-        bodyB.label === LABELS.ball
-      ) {
-        ballBody = bodyB;
-        otherBody = bodyA;
-      }
-
-      if (!ballBody || !otherBody) {
-        return;
-      }
-
-      if (
-        otherBody.label === LABELS.drain
-      ) {
-        this.handleDrain();
-        return;
-      }
-
-      if (
-        otherBody.label === LABELS.bumper
-      ) {
-        this.handleBumperHit(otherBody);
-        return;
-      }
-
-      if (
-        otherBody.label ===
-          LABELS.slingshotLeft ||
-        otherBody.label ===
-          LABELS.slingshotRight
-      ) {
-        this.handleSlingshotHit(
-          otherBody
-        );
-        return;
-      }
-
-      if (
-        otherBody.label ===
-        LABELS.reactor
-      ) {
-        this.handleReactorHit(otherBody);
-        return;
-      }
-
-      if (otherBody.isFlipper) {
-        this.handleFlipperContact(
-          otherBody
-        );
-      }
-    }
-
-    createBall() {
-      if (this.ball) {
-        this.ball.destroy();
-        this.ball = null;
-      }
-
-      this.ball = this.matter.add.image(
-        DEFAULTS.launcher.ballX,
-        DEFAULTS.launcher.ballY,
-        "ball",
-        null,
-        {
-          label: LABELS.ball,
-
-          shape: {
-            type: "circle",
-            radius:
-              DEFAULTS.ball.diameter / 2
-          },
-
-          restitution:
-            DEFAULTS.ball.restitution,
-
-          friction:
-            DEFAULTS.ball.friction,
-
-          frictionAir:
-            DEFAULTS.ball.frictionAir,
-
-          density:
-            DEFAULTS.ball.density
-        }
-      );
-
-      this.ball
-        .setDisplaySize(
-          DEFAULTS.ball.diameter,
-          DEFAULTS.ball.diameter
-        )
-        .setDepth(DEPTH.ball)
-        .setBounce(
-          DEFAULTS.ball.restitution
-        );
-
-      this.ball.body.label = LABELS.ball;
-      this.ball.body.gameObjectRef =
-        this.ball;
-
-      this.gameState.ballInPlay = true;
-      this.gameState.ballLaunched = false;
-      this.gameState.drainLocked = false;
-      this.gameState.lastBallMotionAt =
-        this.time.now;
-
-      this.gameState.lastBallPosition = {
-        x: this.ball.x,
-        y: this.ball.y
-      };
-
-      this.createBallSpawnBurst(
-        this.ball.x,
-        this.ball.y
-      );
-
-      this.updateHud();
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:ball-created",
-          {
-            detail: {
-              ballNumber:
-                this.gameState.ballNumber
-            }
-          }
-        )
-      );
-    }
-
-    beginLauncherCharge() {
-      if (
-        !this.gameState.playing ||
-        !this.ball ||
-        this.gameState.ballLaunched ||
-        this.gameState.launcherCharging
-      ) {
-        return;
-      }
-
-      this.gameState.launcherCharging = true;
-      this.gameState.launcherChargeStartedAt =
-        this.time.now;
-
-      this.tweens.killTweensOf(
-        this.launcherCap
-      );
-
-      this.tweens.add({
-        targets: this.launcherCap,
-        y:
-          DEFAULTS.launcher.y + 90,
-        duration:
-          DEFAULTS.launcher.chargeMs,
-        ease: "Sine.Out"
-      });
-
-      this.tweens.add({
-        targets: this.launcherSpring,
-        scaleY: 0.45,
-        duration:
-          DEFAULTS.launcher.chargeMs,
-        ease: "Sine.Out"
-      });
-    }
-
-    releaseLauncher() {
-      if (
-        !this.gameState.launcherCharging ||
-        !this.ball ||
-        this.gameState.ballLaunched
-      ) {
-        return;
-      }
-
-      const heldMs =
-        this.time.now -
-        this.gameState.launcherChargeStartedAt;
-
-      const ratio = Phaser.Math.Clamp(
-        heldMs /
-          DEFAULTS.launcher.chargeMs,
-        0.08,
-        1
-      );
-
-      const force =
-        Phaser.Math.Linear(
-          DEFAULTS.launcher.minimumForce,
-          DEFAULTS.launcher.maximumForce,
-          ratio
-        );
-
-      this.gameState.launcherCharging =
-        false;
-
-      this.gameState.ballLaunched = true;
-
-      this.ball.setVelocity(
-        Phaser.Math.FloatBetween(-0.25, 0.25),
-        -force
-      );
-
-      this.ball.setAngularVelocity(
-        Phaser.Math.FloatBetween(
-          -0.16,
-          0.16
-        )
-      );
-
-      this.tweens.killTweensOf(
-        this.launcherCap
-      );
-
-      this.tweens.killTweensOf(
-        this.launcherSpring
-      );
-
-      this.tweens.add({
-        targets: this.launcherCap,
-        y:
-          DEFAULTS.launcher.y + 18,
-        duration: 105,
-        ease: "Back.Out"
-      });
-
-      this.tweens.add({
-        targets: this.launcherSpring,
-        scaleY: 1,
-        duration: 150,
-        ease: "Elastic.Out"
-      });
-
-      this.launcherMeter.height = 0;
-
-      this.cameras.main.shake(
-        90,
-        0.002
-      );
-
-      this.flashTable(
-        0x54ff67,
-        0.16,
-        90
-      );
-
-      this.createImpactParticles(
-        this.ball.x,
-        this.ball.y,
-        0x54ff67,
-        16
-      );
-
-      this.vibrate(20);
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:ball-launched",
-          {
-            detail: {
-              force,
-              chargeRatio: ratio
-            }
-          }
-        )
-      );
-    }
-
-    handleFlipperContact(flipperBody) {
-      if (!this.ball) {
-        return;
-      }
-
-      const side =
-        flipperBody.flipperSide;
-
-      const pressed =
-        side === "left"
-          ? this.isLeftFlipperActive()
-          : this.isRightFlipperActive();
-
-      if (!pressed) {
-        return;
-      }
-
-      const direction =
-        side === "left" ? 1 : -1;
-
-      const velocityX =
-        this.ball.body.velocity.x +
-        direction *
-          Phaser.Math.FloatBetween(
-            3.4,
-            5.5
-          );
-
-      const velocityY = Math.min(
-        this.ball.body.velocity.y - 12,
-        -13
-      );
-
-      this.ball.setVelocity(
-        velocityX,
-        velocityY
-      );
-
-      this.createImpactParticles(
-        this.ball.x,
-        this.ball.y,
-        side === "left"
-          ? 0x55ff66
-          : 0xa05cff,
-        7
-      );
-
-      this.cameras.main.shake(
-        45,
-        0.0015
-      );
-    }
-
-    handleBumperHit(body) {
-      const sprite = body.gameObjectRef;
-
-      if (!sprite) {
-        return;
-      }
-
-      this.addScore(
-        body.scoreValue ||
-          SCORE_VALUES.bumper,
-        sprite.x,
-        sprite.y - 65,
-        "bumper"
-      );
-
-      this.tweens.killTweensOf(sprite);
-
-      this.tweens.add({
-        targets: sprite,
-        scaleX: 1.13,
-        scaleY: 1.13,
-        duration: 65,
-        yoyo: true,
-        ease: "Quad.Out"
-      });
-
-      if (sprite.glow) {
-        this.tweens.killTweensOf(
-          sprite.glow
-        );
-
-        this.tweens.add({
-          targets: sprite.glow,
-          alpha: 0.58,
-          scaleX: 1.25,
-          scaleY: 1.25,
-          duration: 70,
-          yoyo: true,
-          ease: "Quad.Out"
-        });
-      }
-
-      sprite.setTint(0xffffff);
-
-      this.time.delayedCall(80, () => {
-        sprite.clearTint();
-      });
-
-      this.flashTable(
-        sprite.bumperIndex % 2 === 0
-          ? 0x5cff6c
-          : 0x9854ff,
-        0.09,
-        70
-      );
-
-      this.createImpactParticles(
-        sprite.x,
-        sprite.y,
-        sprite.bumperIndex % 2 === 0
-          ? 0x5cff6c
-          : 0x9854ff,
-        13
-      );
-
-      this.cameras.main.shake(
-        70,
-        0.0027
-      );
-
-      this.vibrate(18);
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:bumper-hit",
-          {
-            detail: {
-              index: sprite.bumperIndex,
-              score:
-                body.scoreValue ||
-                SCORE_VALUES.bumper
-            }
-          }
-        )
-      );
-    }
-
-    handleSlingshotHit(body) {
-      const sprite = body.gameObjectRef;
-
-      if (!sprite) {
-        return;
-      }
-
-      const isLeft =
-        body.label ===
-        LABELS.slingshotLeft;
-
-      this.addScore(
-        body.scoreValue ||
-          SCORE_VALUES.slingshot,
-        sprite.x,
-        sprite.y - 90,
-        "slingshot"
-      );
-
-      this.tweens.killTweensOf(sprite);
-
-      this.tweens.add({
-        targets: sprite,
-        scaleX: 1.075,
-        scaleY: 0.94,
-        duration: 55,
-        yoyo: true,
-        ease: "Back.Out"
-      });
-
-      sprite.setTint(
-        isLeft
-          ? 0x7dff84
-          : 0xa26cff
-      );
-
-      this.time.delayedCall(85, () => {
-        sprite.clearTint();
-      });
-
-      this.createImpactParticles(
-        sprite.x,
-        sprite.y - 55,
-        isLeft
-          ? 0x57ff67
-          : 0xa05cff,
-        11
-      );
-
-      this.flashTable(
-        isLeft
-          ? 0x48ff60
-          : 0x8e4fff,
-        0.075,
-        65
-      );
-
-      this.cameras.main.shake(
-        58,
-        0.002
-      );
-
-      this.vibrate(14);
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:slingshot-hit",
-          {
-            detail: {
-              side:
-                isLeft
-                  ? "left"
-                  : "right",
-
-              score:
-                body.scoreValue ||
-                SCORE_VALUES.slingshot
-            }
-          }
-        )
-      );
-    }
-
-    handleReactorHit(body) {
-      this.addScore(
-        body.scoreValue ||
-          SCORE_VALUES.reactor,
-        this.reactor.x,
-        this.reactor.y - 145,
-        "reactor"
-      );
-
-      this.tweens.killTweensOf(
-        this.reactorGlow
-      );
-
-      this.tweens.add({
-        targets: this.reactorGlow,
-        scaleX: 1.34,
-        scaleY: 1.34,
-        alpha: 0.75,
-        duration: 110,
-        yoyo: true,
-        ease: "Expo.Out",
-        onComplete: () => {
-          this.startReactorIdleGlow();
-        }
-      });
-
-      this.tweens.add({
-        targets: this.reactor,
-        scaleX: 1.08,
-        scaleY: 1.08,
-        angle:
-          this.reactor.angle + 28,
-        duration: 95,
-        yoyo: true,
-        ease: "Back.Out"
-      });
-
-      this.flashTable(
-        0xa14fff,
-        0.22,
-        125
-      );
-
-      this.createImpactParticles(
-        this.reactor.x,
-        this.reactor.y,
-        0x9b4dff,
-        28
-      );
-
-      this.createImpactParticles(
-        this.reactor.x,
-        this.reactor.y,
-        0x55ff65,
-        18
-      );
-
-      this.cameras.main.shake(
-        150,
-        0.006
-      );
-
-      this.vibrate([25, 20, 35]);
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:reactor-hit",
-          {
-            detail: {
-              score:
-                body.scoreValue ||
-                SCORE_VALUES.reactor
-            }
-          }
-        )
-      );
-    }
-
-    startReactorIdleGlow() {
-      this.tweens.killTweensOf(
-        this.reactorGlow
-      );
-
-      this.tweens.add({
-        targets: this.reactorGlow,
-        scaleX: {
-          from: 0.96,
-          to: 1.08
-        },
-        scaleY: {
-          from: 0.96,
-          to: 1.08
-        },
-        alpha: {
-          from: 0.16,
-          to: 0.34
-        },
-        duration: 820,
-        yoyo: true,
-        repeat: -1,
-        ease: "Sine.InOut"
-      });
-    }
-
-    addScore(
-      amount,
-      x,
-      y,
-      source = "general"
-    ) {
-      if (!this.gameState.playing) {
-        return;
-      }
-
-      const points = Math.max(
-        0,
-        Math.floor(Number(amount) || 0)
-      );
-
-      this.gameState.score += points;
-
-      this.updateHud();
-      this.createFloatingScore(
-        x,
-        y,
-        points,
-        source
-      );
-
-      const scoreElement =
-        document.getElementById(
-          "score-display"
-        );
-
-      if (scoreElement) {
-        scoreElement.classList.remove(
-          "effect-pulse"
-        );
-
-        void scoreElement.offsetWidth;
-
-        scoreElement.classList.add(
-          "effect-pulse"
-        );
-      }
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:score-changed",
-          {
-            detail: {
-              score:
-                this.gameState.score,
-
-              added: points,
-              source
-            }
-          }
-        )
-      );
-    }
-
-    createFloatingScore(
-      x,
-      y,
-      amount,
-      source
-    ) {
-      const color =
-        source === "reactor"
-          ? "#c58cff"
-          : source === "bumper"
-            ? "#79ff83"
-            : "#ffffff";
-
-      const text = this.add
-        .text(
-          x,
-          y,
-          `+${formatScore(amount)}`,
-          {
-            fontFamily:
-              "Arial, Helvetica, sans-serif",
-
-            fontSize:
-              source === "reactor"
-                ? "38px"
-                : "28px",
-
-            fontStyle: "bold",
-            color,
-
-            stroke: "#050505",
-            strokeThickness: 6,
-
-            shadow: {
-              offsetX: 0,
-              offsetY: 0,
-              color,
-              blur: 14,
-              fill: true
-            }
-          }
-        )
-        .setOrigin(0.5)
-        .setDepth(DEPTH.text)
-        .setScale(0.72)
-        .setAlpha(0);
-
-      this.tweens.add({
-        targets: text,
-        y: y - 92,
-        scaleX: 1,
-        scaleY: 1,
-        alpha: {
-          from: 0,
-          to: 1
-        },
-        duration: 170,
-        ease: "Back.Out",
-        onComplete: () => {
-          this.tweens.add({
-            targets: text,
-            y: text.y - 36,
-            alpha: 0,
-            duration: 520,
-            delay: 180,
-            ease: "Quad.In",
-            onComplete: () => {
-              text.destroy();
-            }
-          });
-        }
-      });
-    }
-
-    createImpactParticles(
-      x,
-      y,
-      color,
-      count = 10
-    ) {
-      for (let i = 0; i < count; i += 1) {
-        const radius =
-          Phaser.Math.Between(2, 6);
-
-        const particle = this.add
-          .circle(
-            x,
-            y,
-            radius,
-            color,
-            Phaser.Math.FloatBetween(
-              0.55,
-              1
-            )
-          )
-          .setBlendMode(
-            Phaser.BlendModes.ADD
-          )
-          .setDepth(
-            DEPTH.effectsFront
-          );
-
-        const angle =
-          Phaser.Math.FloatBetween(
-            0,
-            Math.PI * 2
-          );
-
-        const distance =
-          Phaser.Math.Between(40, 120);
-
-        this.tweens.add({
-          targets: particle,
-          x:
-            x +
-            Math.cos(angle) *
-              distance,
-
-          y:
-            y +
-            Math.sin(angle) *
-              distance,
-
-          alpha: 0,
-          scaleX: 0.15,
-          scaleY: 0.15,
-
-          duration:
-            Phaser.Math.Between(
-              260,
-              520
-            ),
-
-          ease: "Quad.Out",
-
-          onComplete: () => {
-            particle.destroy();
-          }
-        });
-      }
-    }
-
-    createBallSpawnBurst(x, y) {
-      const ring = this.add
-        .circle(
-          x,
-          y,
-          16,
-          0x60ff70,
-          0
-        )
-        .setStrokeStyle(
-          5,
-          0x60ff70,
-          0.9
-        )
-        .setBlendMode(
-          Phaser.BlendModes.ADD
-        )
-        .setDepth(
-          DEPTH.effectsFront
-        );
-
-      this.tweens.add({
-        targets: ring,
-        scaleX: 4.5,
-        scaleY: 4.5,
-        alpha: 0,
-        duration: 360,
-        ease: "Expo.Out",
-        onComplete: () => {
-          ring.destroy();
-        }
-      });
-    }
-
-    createBallTrail() {
-      if (
-        !this.ball ||
-        !this.gameState.ballInPlay
-      ) {
-        return;
-      }
-
-      const speed = Math.hypot(
-        this.ball.body.velocity.x,
-        this.ball.body.velocity.y
-      );
-
-      if (speed < 4) {
-        return;
-      }
-
-      const trail = this.add
-        .circle(
-          this.ball.x,
-          this.ball.y,
-          Phaser.Math.Clamp(
-            speed * 0.28,
-            3,
-            9
-          ),
-          speed > 18
-            ? 0xb05cff
-            : 0x5cff70,
-          0.28
-        )
-        .setBlendMode(
-          Phaser.BlendModes.ADD
-        )
-        .setDepth(DEPTH.ballTrail);
-
-      this.tweens.add({
-        targets: trail,
-        scaleX: 0.1,
-        scaleY: 0.1,
-        alpha: 0,
-        duration: 210,
-        ease: "Quad.Out",
-        onComplete: () => {
-          trail.destroy();
-        }
-      });
-    }
-
-    flashTable(
-      color = 0xffffff,
-      alpha = 0.15,
-      duration = 90
-    ) {
-      this.tableFlash
-        .setFillStyle(color, 1)
-        .setAlpha(0);
-
-      this.tweens.killTweensOf(
-        this.tableFlash
-      );
-
-      this.tweens.add({
-        targets: this.tableFlash,
-        alpha,
-        duration:
-          Math.max(30, duration / 2),
-        yoyo: true,
-        ease: "Quad.Out"
-      });
-    }
-
-    isLeftFlipperActive() {
-      return (
-        this.gameState.leftFlipperPressed ||
-        this.keys.left.isDown ||
-        this.keys.leftAlt.isDown
-      );
-    }
-
-    isRightFlipperActive() {
-      return (
-        this.gameState.rightFlipperPressed ||
-        this.keys.right.isDown ||
-        this.keys.rightAlt.isDown
-      );
-    }
-
-    updateFlippers() {
-      if (
-        !this.leftFlipper ||
-        !this.rightFlipper
-      ) {
-        return;
-      }
-
-      const leftTarget =
-        this.isLeftFlipperActive()
-          ? DEFAULTS.flippers.left
-              .activeAngle
-          : DEFAULTS.flippers.left
-              .restingAngle;
-
-      const rightTarget =
-        this.isRightFlipperActive()
-          ? DEFAULTS.flippers.right
-              .activeAngle
-          : DEFAULTS.flippers.right
-              .restingAngle;
-
-      const leftSpeed =
-        this.isLeftFlipperActive()
-          ? DEFAULTS.flippers
-              .angularSpeed
-          : DEFAULTS.flippers
-              .returnSpeed;
-
-      const rightSpeed =
-        this.isRightFlipperActive()
-          ? DEFAULTS.flippers
-              .angularSpeed
-          : DEFAULTS.flippers
-              .returnSpeed;
-
-      this.leftFlipper.setRotation(
-        Phaser.Math.Linear(
-          this.leftFlipper.rotation,
-          leftTarget,
-          leftSpeed
-        )
-      );
-
-      this.rightFlipper.setRotation(
-        Phaser.Math.Linear(
-          this.rightFlipper.rotation,
-          rightTarget,
-          rightSpeed
-        )
-      );
-
-      this.leftFlipper.setTint(
-        this.isLeftFlipperActive()
-          ? 0xb8ffbc
-          : 0xffffff
-      );
-
-      this.rightFlipper.setTint(
-        this.isRightFlipperActive()
-          ? 0xd8b8ff
-          : 0xffffff
-      );
-    }
-
-    updateLauncherMeter() {
-      if (
-        !this.gameState.launcherCharging
-      ) {
-        this.launcherMeter.height = 0;
-        return;
-      }
-
-      const ratio = Phaser.Math.Clamp(
-        (
-          this.time.now -
-          this.gameState
-            .launcherChargeStartedAt
-        ) /
-          DEFAULTS.launcher.chargeMs,
-        0,
-        1
-      );
-
-      this.launcherMeter.height =
-        170 * ratio;
-
-      this.launcherMeter.setFillStyle(
-        ratio > 0.82
-          ? 0xbd5cff
-          : ratio > 0.5
-            ? 0x79ff65
-            : 0x4cd5ff,
-        0.95
-      );
-    }
-
-    clampBallVelocity() {
-      if (!this.ball) {
-        return;
-      }
-
-      const velocity =
-        this.ball.body.velocity;
-
-      const speed = Math.hypot(
-        velocity.x,
-        velocity.y
-      );
-
-      if (
-        speed >
-        DEFAULTS.ball.maxSpeed
-      ) {
-        const ratio =
-          DEFAULTS.ball.maxSpeed /
-          speed;
-
-        this.ball.setVelocity(
-          velocity.x * ratio,
-          velocity.y * ratio
-        );
-      }
-    }
-
-    trackBallMovement() {
-      if (
-        !this.ball ||
-        !this.gameState.ballInPlay
-      ) {
-        return;
-      }
-
-      const previous =
-        this.gameState.lastBallPosition;
-
-      if (!previous) {
-        this.gameState.lastBallPosition = {
-          x: this.ball.x,
-          y: this.ball.y
-        };
-
-        return;
-      }
-
-      const movement =
-        Phaser.Math.Distance.Between(
-          previous.x,
-          previous.y,
-          this.ball.x,
-          this.ball.y
-        );
-
-      if (movement > 3) {
-        this.gameState.lastBallMotionAt =
-          this.time.now;
-
-        this.gameState.lastBallPosition = {
-          x: this.ball.x,
-          y: this.ball.y
-        };
-      }
-
-      const stalledFor =
-        this.time.now -
-        this.gameState.lastBallMotionAt;
-
-      if (
-        stalledFor > 4500 &&
-        this.gameState.ballLaunched
-      ) {
-        this.unstickBall();
-      }
-    }
-
-    unstickBall() {
-      if (!this.ball) {
-        return;
-      }
-
-      const direction =
-        this.ball.x < WORLD.width / 2
-          ? 1
-          : -1;
-
-      this.ball.setVelocity(
-        direction *
-          Phaser.Math.FloatBetween(
-            2.8,
-            5.4
-          ),
-        Phaser.Math.FloatBetween(
-          -8,
-          -13
-        )
-      );
-
-      this.gameState.lastBallMotionAt =
-        this.time.now;
-
-      this.createImpactParticles(
-        this.ball.x,
-        this.ball.y,
-        0x72e7ff,
-        8
-      );
-    }
-
-    handleDrain() {
-      if (
-        this.gameState.drainLocked ||
-        !this.gameState.ballInPlay
-      ) {
-        return;
-      }
-
-      this.gameState.drainLocked = true;
-      this.gameState.ballInPlay = false;
-
-      this.flashTable(
-        0xff335f,
-        0.28,
-        160
-      );
-
-      this.cameras.main.shake(
-        180,
-        0.006
-      );
-
-      this.createImpactParticles(
-        DEFAULTS.drain.x,
-        DEFAULTS.drain.y - 20,
-        0xff355c,
-        22
-      );
-
-      this.vibrate([40, 35, 55]);
-
-      if (this.ball) {
-        this.tweens.add({
-          targets: this.ball,
-          alpha: 0,
-          scaleX: 0.45,
-          scaleY: 0.45,
-          duration: 170,
-          ease: "Quad.In",
-          onComplete: () => {
-            if (this.ball) {
-              this.ball.destroy();
-              this.ball = null;
-            }
-          }
-        });
-      }
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:ball-drained",
-          {
-            detail: {
-              ballNumber:
-                this.gameState.ballNumber,
-
-              ballsRemaining:
-                this.gameState.ballsRemaining
-            }
-          }
-        )
-      );
-
-      this.time.delayedCall(
-        950,
-        () => {
-          this.advanceAfterDrain();
-        }
-      );
-    }
-
-    advanceAfterDrain() {
-      if (!this.gameState.playing) {
-        return;
-      }
-
-      if (
-        this.gameState.ballsRemaining > 0
-      ) {
-        this.gameState.ballNumber += 1;
-        this.gameState.ballsRemaining -= 1;
-
-        this.createBall();
-        this.updateHud();
-
-        this.flashTable(
-          0x60ff70,
-          0.1,
-          100
-        );
-      } else {
-        this.finishGame();
-      }
-    }
-
-    updateHud() {
-      if (dom.scoreDisplay) {
-        dom.scoreDisplay.textContent =
-          formatScore(
-            this.gameState.score
-          );
-      }
-
-      if (dom.ballDisplay) {
-        const currentBall =
-          this.gameState.playing
-            ? Math.min(
-                this.gameState.ballNumber,
-                getBallsPerGame()
-              )
-            : 0;
-
-        dom.ballDisplay.textContent =
-          `${currentBall} / ${getBallsPerGame()}`;
-      }
-    }
-
-    async startGame(options = {}) {
-      if (
-        !this.gameState.ready ||
-        this.gameState.playing
-      ) {
-        return false;
-      }
-
-      const sessionId =
-        options.sessionId ||
-        createSessionId();
-
-      this.resetGameState();
-
-      this.gameState.sessionId =
-        sessionId;
-
-      this.gameState.credit =
-        options.credit || null;
-
-      this.gameState.playing = true;
-      this.gameState.gameOver = false;
-      this.gameState.ballNumber = 1;
-      this.gameState.ballsRemaining =
-        getBallsPerGame() - 1;
-
-      this.createBall();
-      this.updateHud();
-      hideOverlay();
-
-      this.cameras.main.fadeIn(
-        300,
-        0,
-        0,
-        0
-      );
-
-      this.flashTable(
-        0x8f4fff,
-        0.15,
-        120
-      );
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:game-started",
-          {
-            detail: {
-              sessionId,
-              tournamentId:
-                CONFIG.tournament.id,
-              tournamentSeason:
-                CONFIG.tournament.season
-            }
-          }
-        )
-      );
-
-      return true;
-    }
-
-    resetGameState() {
-      if (this.ball) {
-        this.ball.destroy();
-        this.ball = null;
-      }
-
-      this.gameState.score = 0;
-      this.gameState.ballNumber = 0;
-      this.gameState.ballsRemaining =
-        getBallsPerGame();
-
-      this.gameState.ballInPlay = false;
-      this.gameState.ballLaunched = false;
-      this.gameState.launcherCharging =
-        false;
-
-      this.gameState.leftFlipperPressed =
-        false;
-
-      this.gameState.rightFlipperPressed =
-        false;
-
-      this.gameState.drainLocked = false;
-
-      this.launcherMeter.height = 0;
-      this.updateHud();
-    }
-
-    async finishGame() {
-      if (
-        !this.gameState.playing ||
-        this.gameState.gameOver
-      ) {
-        return;
-      }
-
-      this.gameState.playing = false;
-      this.gameState.gameOver = true;
-      this.gameState.ballInPlay = false;
-
-      const finalScore =
-        this.gameState.score;
-
-      this.flashTable(
-        0x9c52ff,
-        0.28,
-        220
-      );
-
-      this.cameras.main.shake(
-        190,
-        0.0045
-      );
-
-      this.tweens.add({
-        targets: this.vignette,
-        alpha: 0.45,
-        duration: 240,
-        yoyo: true,
-        ease: "Quad.Out"
-      });
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:game-ended",
-          {
-            detail: {
-              score: finalScore,
-              sessionId:
-                this.gameState.sessionId
-            }
-          }
-        )
-      );
-
-      let submission = {
-        improved: false,
-        rank: null,
-        previousBest: 0
-      };
-
-      try {
-        const paymentState =
-          window.PumpBallPayments
-            ?.getState?.();
-
-        const walletAddress =
-          paymentState?.walletAddress ||
-          null;
-
-        const isPaid =
-          this.gameState.credit?.type ===
-          "paid";
-
-        if (
-          window.PumpBallLeaderboard &&
-          typeof window
-            .PumpBallLeaderboard
-            .submitScore === "function"
-        ) {
-          submission =
-            await window.PumpBallLeaderboard
-              .submitScore({
-                score: finalScore,
-
-                sessionId:
-                  this.gameState.sessionId,
-
-                playerId:
-                  walletAddress,
-
-                verified: isPaid
-              });
-        }
-      } catch (error) {
-        console.error(
-          "[PumpBall] Score submission failed:",
-          error
-        );
-
-        submission = {
-          improved: false,
-          rank: null,
-          previousBest: 0,
-          error
-        };
-      }
-
-      if (submission.improved) {
-        this.playNewBestCelebration();
-      }
-
-      showGameOverPanel({
-        score: finalScore,
-        rank: submission.rank,
-        improved:
-          Boolean(submission.improved),
-        previousBest:
-          submission.previousBest || 0
-      });
-    }
-
-    playNewBestCelebration() {
-      this.flashTable(
-        0x62ff73,
-        0.36,
-        240
-      );
-
-      this.createImpactParticles(
-        WORLD.width / 2,
-        WORLD.height * 0.42,
-        0x62ff73,
-        40
-      );
-
-      this.createImpactParticles(
-        WORLD.width / 2,
-        WORLD.height * 0.42,
-        0xb15cff,
-        40
-      );
-
-      this.cameras.main.shake(
-        280,
-        0.008
-      );
-
-      this.vibrate([
-        35,
-        25,
-        35,
-        25,
-        70
-      ]);
-
-      window.dispatchEvent(
-        new CustomEvent(
-          "pumpball:new-best-celebration"
-        )
-      );
-    }
-
-    pauseGame() {
-      if (
-        !this.gameState.playing ||
-        this.gameState.paused
-      ) {
-        return;
-      }
-
-      this.gameState.paused = true;
-      this.matter.world.pause();
-      this.scene.pause();
-    }
-
-    resumeGame() {
-      if (!this.gameState.paused) {
-        return;
-      }
-
-      this.gameState.paused = false;
-      this.matter.world.resume();
-      this.scene.resume();
-    }
-
-    getPublicState() {
-      return {
-        ready: this.gameState.ready,
-        playing:
-          this.gameState.playing,
-
-        paused:
-          this.gameState.paused,
-
-        gameOver:
-          this.gameState.gameOver,
-
-        score:
-          this.gameState.score,
-
-        ballNumber:
-          this.gameState.ballNumber,
-
-        ballsRemaining:
-          this.gameState.ballsRemaining,
-
-        sessionId:
-          this.gameState.sessionId,
-
-        ballInPlay:
-          this.gameState.ballInPlay,
-
-        ballLaunched:
-          this.gameState.ballLaunched
-      };
-    }
-
-    vibrate(pattern) {
-      if (
-        CONFIG.effects?.haptics ===
-          false ||
-        typeof navigator.vibrate !==
-          "function"
-      ) {
-        return;
-      }
-
-      try {
-        navigator.vibrate(pattern);
-      } catch (error) {
-        /*
-         * Haptics are optional.
-         */
-      }
-    }
-
-    update() {
-      if (!this.gameState.ready) {
-        return;
-      }
-
-      this.updateFlippers();
-      this.updateLauncherMeter();
-
-      if (!this.gameState.playing) {
-        return;
-      }
-
-      this.clampBallVelocity();
-      this.trackBallMovement();
-
-      if (
-        this.ball &&
-        this.gameState.ballInPlay
-      ) {
-        this.createBallTrail();
-
-        if (
-          this.ball.y >
-          WORLD.height + 90
-        ) {
-          this.handleDrain();
-        }
-      }
-    }
-  }
-
-  async function consumeAndStartCredit(
-    credit
-  ) {
-    if (!credit) {
-      throw new Error(
-        "No valid play credit was created."
-      );
-    }
-
-    if (
-      !window.PumpBallPayments ||
-      typeof window.PumpBallPayments
-        .consumePlayCredit !== "function"
-    ) {
-      throw new Error(
-        "The payment service is unavailable."
-      );
-    }
-
-    if (
-      !runtime.scene ||
-      typeof runtime.scene.startGame !==
-        "function"
-    ) {
-      throw new Error(
-        "The game is still loading."
-      );
-    }
-
-    const sessionId = createSessionId();
-
-    const consumedCredit =
-      window.PumpBallPayments
-        .consumePlayCredit(sessionId);
-
-    runtime.currentSessionId =
-      sessionId;
-
-    runtime.currentCredit =
-      consumedCredit;
-
-    await runtime.scene.startGame({
-      sessionId,
-      credit: consumedCredit
-    });
-
-    return {
-      sessionId,
-      credit: consumedCredit
-    };
-  }
-
-  async function handlePaidPlay() {
-    if (runtime.startingAttempt) {
-      return;
-    }
-
-    runtime.startingAttempt = true;
-    runtime.latestError = null;
-
-    setButtonsBusy(true);
-
-    const entryDisplay =
-      CONFIG.tournament
-        .entryPriceDisplay ||
-      `${CONFIG.tournament.entryPriceSol} SOL`;
-
-    setPlayFeedback(
-      `Preparing your ${entryDisplay} attempt…`,
-      "loading"
-    );
-
-    try {
-      if (
-        !window.PumpBallPayments ||
-        typeof window.PumpBallPayments
-          .purchasePlay !== "function"
-      ) {
-        throw new Error(
-          "The payment service is unavailable."
-        );
-      }
-
-      const credit =
-        await window.PumpBallPayments
-          .purchasePlay();
-
-      setPlayFeedback(
-        "Attempt authorized. Launching PumpBall…",
-        "success"
-      );
-
-      await consumeAndStartCredit(
-        credit
-      );
-
-      setPlayFeedback("");
-    } catch (error) {
-      runtime.latestError = error;
-
-      setPlayFeedback(
-        error.message ||
-          "The attempt could not be authorized.",
-        "error"
-      );
-
-      console.error(
-        "[PumpBall] Paid play failed:",
-        error
-      );
-    } finally {
-      runtime.startingAttempt = false;
-      setButtonsBusy(false);
-      updateWalletUi();
-    }
-  }
-
-  async function handleFreeTestPlay() {
-    if (runtime.startingAttempt) {
-      return;
-    }
-
-    runtime.startingAttempt = true;
-    runtime.latestError = null;
-
-    setButtonsBusy(true);
-
-    setPlayFeedback(
-      "Creating a development play credit…",
-      "loading"
-    );
-
-    try {
-      if (
-        !CONFIG.app?.allowFreeTestGame
-      ) {
-        throw new Error(
-          "Free test games are disabled."
-        );
-      }
-
-      if (
-        !window.PumpBallPayments ||
-        typeof window.PumpBallPayments
-          .createTestPlayCredit !==
-          "function"
-      ) {
-        throw new Error(
-          "The test payment service is unavailable."
-        );
-      }
-
-      const credit =
-        window.PumpBallPayments
-          .createTestPlayCredit();
-
-      setPlayFeedback(
-        "Test credit created. Launching PumpBall…",
-        "success"
-      );
-
-      await consumeAndStartCredit(
-        credit
-      );
-
-      setPlayFeedback("");
-    } catch (error) {
-      runtime.latestError = error;
-
-      setPlayFeedback(
-        error.message ||
-          "The test game could not be started.",
-        "error"
-      );
-
-      console.error(
-        "[PumpBall] Test play failed:",
-        error
-      );
-    } finally {
-      runtime.startingAttempt = false;
-      setButtonsBusy(false);
-    }
-  }
-
-  async function handleConnectWallet() {
-    if (
-      !window.PumpBallPayments ||
-      typeof window.PumpBallPayments
-        .connectWallet !== "function"
-    ) {
-      setPlayFeedback(
-        "The wallet service is unavailable.",
-        "error"
-      );
-
-      return;
-    }
-
-    setButtonsBusy(true);
-
-    try {
-      await window.PumpBallPayments
-        .connectWallet();
-
-      setPlayFeedback(
-        "Wallet connected.",
-        "success"
-      );
-    } catch (error) {
-      setPlayFeedback(
-        error.message ||
-          "Wallet connection failed.",
-        "error"
-      );
-    } finally {
-      setButtonsBusy(false);
-      updateWalletUi();
-    }
-  }
-
-  function handleViewLeaderboard() {
-    const section =
-      document.getElementById(
-        "leaderboard-section"
-      );
-
-    section?.scrollIntoView({
-      behavior: "smooth",
-      block: "start"
-    });
-  }
 
   function cacheDom() {
     dom.purchasePlayButton =
@@ -3561,9 +211,5300 @@
       document.getElementById(
         "footer-tournament-label"
       );
+
+    dom.countdownDays =
+      document.getElementById(
+        "countdown-days"
+      );
+
+    dom.countdownHours =
+      document.getElementById(
+        "countdown-hours"
+      );
+
+    dom.countdownMinutes =
+      document.getElementById(
+        "countdown-minutes"
+      );
+
+    dom.countdownSeconds =
+      document.getElementById(
+        "countdown-seconds"
+      );
   }
 
-  function bindDomEvents() {
+  function assetPath(file) {
+    return `${
+      CONFIG.assets?.basePath ||
+      "assets/"
+    }${file}`;
+  }
+
+  function requiredAsset(
+    key,
+    fallback
+  ) {
+    return (
+      CONFIG.assets?.required?.[key] ||
+      fallback
+    );
+  }
+
+  function formatScore(value) {
+    const score = Math.max(
+      0,
+      Math.floor(
+        Number(value) || 0
+      )
+    );
+
+    return typeof UTILS.formatScore ===
+      "function"
+      ? UTILS.formatScore(score)
+      : score.toLocaleString("en-US");
+  }
+
+  function createSessionId() {
+    if (
+      typeof UTILS.generateSessionId ===
+      "function"
+    ) {
+      return UTILS.generateSessionId();
+    }
+
+    if (
+      window.crypto &&
+      typeof window.crypto.randomUUID ===
+        "function"
+    ) {
+      return `pb-${window.crypto.randomUUID()}`;
+    }
+
+    return `pb-${Date.now().toString(
+      36
+    )}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+  }
+
+  function emit(
+    name,
+    detail = {}
+  ) {
+    window.dispatchEvent(
+      new CustomEvent(name, {
+        detail
+      })
+    );
+  }
+
+  function setFeedback(
+    message = "",
+    type = "neutral"
+  ) {
+    if (!dom.playFeedback) {
+      return;
+    }
+
+    dom.playFeedback.textContent =
+      message;
+
+    dom.playFeedback.dataset.type =
+      type;
+  }
+
+  function setButtonsBusy(
+    isBusy
+  ) {
+    [
+      dom.purchasePlayButton,
+      dom.freeTestButton,
+      dom.playAgainButton,
+      dom.connectWalletButton
+    ].forEach((button) => {
+      if (!button) {
+        return;
+      }
+
+      button.disabled =
+        Boolean(isBusy);
+
+      if (isBusy) {
+        button.setAttribute(
+          "aria-busy",
+          "true"
+        );
+      } else {
+        button.removeAttribute(
+          "aria-busy"
+        );
+      }
+    });
+  }
+
+  function showStartPanel() {
+    if (dom.gameStartPanel) {
+      dom.gameStartPanel.hidden =
+        false;
+    }
+
+    if (dom.gameOverPanel) {
+      dom.gameOverPanel.hidden =
+        true;
+    }
+
+    if (dom.gameOverlay) {
+      dom.gameOverlay.hidden =
+        false;
+
+      dom.gameOverlay.classList.remove(
+        "is-hidden"
+      );
+    }
+  }
+
+  function hideOverlay() {
+    if (!dom.gameOverlay) {
+      return;
+    }
+
+    dom.gameOverlay.classList.add(
+      "is-hidden"
+    );
+
+    window.setTimeout(() => {
+      if (
+        runtime.scene?.state.playing
+      ) {
+        dom.gameOverlay.hidden = true;
+      }
+    }, 220);
+  }
+  function showGameOverPanel({
+    score,
+    rank = null,
+    improved = false,
+    previousBest = 0
+  }) {
+    if (dom.gameStartPanel) {
+      dom.gameStartPanel.hidden = true;
+    }
+
+    if (dom.gameOverPanel) {
+      dom.gameOverPanel.hidden = false;
+    }
+
+    if (dom.gameOverlay) {
+      dom.gameOverlay.hidden = false;
+
+      requestAnimationFrame(() => {
+        dom.gameOverlay.classList.remove(
+          "is-hidden"
+        );
+      });
+    }
+
+    if (dom.finalScoreDisplay) {
+      dom.finalScoreDisplay.textContent =
+        formatScore(score);
+    }
+
+    if (!dom.rankFeedback) {
+      return;
+    }
+
+    if (improved && rank) {
+      dom.rankFeedback.textContent =
+        `New personal best. You are ranked #${rank}.`;
+
+      return;
+    }
+
+    if (improved) {
+      dom.rankFeedback.textContent =
+        "New personal best recorded.";
+
+      return;
+    }
+
+    dom.rankFeedback.textContent =
+      `Attempt recorded. Your best remains ${formatScore(
+        previousBest
+      )}.`;
+  }
+
+  function updateWalletUi() {
+    const paymentState =
+      Payments?.getState?.();
+
+    if (!paymentState) {
+      return;
+    }
+
+    if (dom.walletStatus) {
+      dom.walletStatus.textContent =
+        paymentState.walletConnected
+          ? paymentState.shortenedWalletAddress ||
+            paymentState.walletAddress ||
+            "Wallet connected"
+          : "Wallet not connected";
+    }
+
+    if (dom.connectWalletButton) {
+      dom.connectWalletButton.textContent =
+        paymentState.walletConnected
+          ? "Wallet Connected"
+          : "Connect Wallet";
+    }
+  }
+
+  function updateTournamentUi() {
+    const tournament =
+      CONFIG.tournament;
+
+    if (!tournament) {
+      return;
+    }
+
+    const entryDisplay =
+      tournament.entryPriceDisplay ||
+      `${tournament.entryPriceSol} SOL`;
+
+    if (dom.entryPrice) {
+      dom.entryPrice.textContent =
+        entryDisplay;
+    }
+
+    if (dom.prizePool) {
+      dom.prizePool.textContent =
+        tournament.prizePoolDisplay ||
+        `${tournament.prizePoolSol} SOL`;
+    }
+
+    if (dom.winnerCount) {
+      dom.winnerCount.textContent =
+        `Top ${
+          tournament.winnerCount || 2
+        }`;
+    }
+
+    if (dom.tournamentLabel) {
+      dom.tournamentLabel.textContent =
+        [
+          tournament.name,
+          tournament.promotionalLabel
+        ]
+          .filter(Boolean)
+          .join(" · ");
+    }
+
+    if (dom.footerTournamentLabel) {
+      dom.footerTournamentLabel.textContent =
+        tournament.name || "";
+    }
+
+    if (dom.purchasePlayButton) {
+      dom.purchasePlayButton.textContent =
+        `Play for ${entryDisplay}`;
+    }
+
+    if (dom.playAgainButton) {
+      dom.playAgainButton.textContent =
+        `Play Again for ${entryDisplay}`;
+    }
+  }
+
+  function updateCountdown() {
+    const startsAt = new Date(
+      CONFIG.tournament.startsAt
+    ).getTime();
+
+    const endsAt = new Date(
+      CONFIG.tournament.endsAt
+    ).getTime();
+
+    const now = Date.now();
+
+    let targetTime;
+    let statusText;
+
+    if (now < startsAt) {
+      targetTime = startsAt;
+      statusText =
+        "Tournament coming soon";
+    } else if (now < endsAt) {
+      targetTime = endsAt;
+      statusText =
+        "Tournament is live";
+    } else {
+      targetTime = now;
+      statusText =
+        "Tournament has ended";
+    }
+
+    const remaining = Math.max(
+      0,
+      targetTime - now
+    );
+
+    const days = Math.floor(
+      remaining / 86_400_000
+    );
+
+    const hours = Math.floor(
+      (remaining % 86_400_000) /
+        3_600_000
+    );
+
+    const minutes = Math.floor(
+      (remaining % 3_600_000) /
+        60_000
+    );
+
+    const seconds = Math.floor(
+      (remaining % 60_000) /
+        1_000
+    );
+
+    const pad = (value) =>
+      String(value).padStart(2, "0");
+
+    if (dom.countdownDays) {
+      dom.countdownDays.textContent =
+        pad(days);
+    }
+
+    if (dom.countdownHours) {
+      dom.countdownHours.textContent =
+        pad(hours);
+    }
+
+    if (dom.countdownMinutes) {
+      dom.countdownMinutes.textContent =
+        pad(minutes);
+    }
+
+    if (dom.countdownSeconds) {
+      dom.countdownSeconds.textContent =
+        pad(seconds);
+    }
+
+    if (dom.tournamentStatus) {
+      dom.tournamentStatus.textContent =
+        statusText;
+    }
+  }
+
+  function getPersonalBest() {
+    const summary =
+      Leaderboard?.getPlayerSummary?.();
+
+    return Math.max(
+      0,
+      Number(summary?.bestScore) || 0
+    );
+  }
+
+  function updatePersonalBestUi() {
+    if (!dom.personalBestDisplay) {
+      return;
+    }
+
+    dom.personalBestDisplay.textContent =
+      formatScore(getPersonalBest());
+  }
+
+  function vibrate(pattern) {
+    if (
+      !CONFIG.effects?.haptics
+        ?.enabled ||
+      typeof navigator.vibrate !==
+        "function"
+    ) {
+      return;
+    }
+
+    navigator.vibrate(pattern);
+  }
+
+  function getMatterBodyLabel(
+    body
+  ) {
+    if (!body) {
+      return "";
+    }
+
+    return (
+      body.label ||
+      body.gameObject?.body?.label ||
+      ""
+    );
+  }
+
+  function getCollisionPair(
+    event
+  ) {
+    if (
+      !event?.pairs ||
+      event.pairs.length === 0
+    ) {
+      return null;
+    }
+
+    return event.pairs[0];
+  }
+
+  function pairContainsLabel(
+    pair,
+    label
+  ) {
+    if (!pair) {
+      return false;
+    }
+
+    return (
+      getMatterBodyLabel(pair.bodyA) ===
+        label ||
+      getMatterBodyLabel(pair.bodyB) ===
+        label
+    );
+  }
+
+  function getOtherBody(
+    pair,
+    knownLabel
+  ) {
+    if (!pair) {
+      return null;
+    }
+
+    if (
+      getMatterBodyLabel(pair.bodyA) ===
+      knownLabel
+    ) {
+      return pair.bodyB;
+    }
+
+    if (
+      getMatterBodyLabel(pair.bodyB) ===
+      knownLabel
+    ) {
+      return pair.bodyA;
+    }
+
+    return null;
+  }
+
+  class PumpBallScene extends Phaser.Scene {
+    constructor() {
+      super({
+        key: "PumpBallScene"
+      });
+
+      this.state = {
+        ready: false,
+        playing: false,
+        paused: false,
+        gameOver: false,
+
+        score: 0,
+
+        ballNumber: 0,
+        ballsRemaining:
+          Number(
+            CONFIG.game?.ballsPerGame
+          ) || 3,
+
+        sessionId: null,
+        credit: null,
+
+        ballInPlay: false,
+        ballLaunched: false,
+
+        launcherCharging: false,
+        launcherChargeStartedAt: 0,
+        launcherCharge: 0,
+
+        launchGraceUntil: 0,
+        drainLocked: false,
+
+        leftFlipperPressed: false,
+        rightFlipperPressed: false,
+
+        lastBallMotionAt: 0,
+        lastBallPosition: null,
+
+        ballSaveUsed: false
+      };
+
+      this.ball = null;
+      this.ballShadow = null;
+
+      this.playfield = null;
+
+      this.leftFlipper = null;
+      this.rightFlipper = null;
+
+      this.leftFlipperBody = null;
+      this.rightFlipperBody = null;
+
+      this.bumpers = [];
+
+      this.leftSlingshot = null;
+      this.rightSlingshot = null;
+
+      this.reactor = null;
+      this.reactorGlow = null;
+
+      this.launcherTrack = null;
+      this.launcherSpring = null;
+      this.launcherCap = null;
+      this.launcherMeter = null;
+
+      this.screenFlash = null;
+      this.vignette = null;
+
+      this.staticBodies = [];
+      this.trailSprites = [];
+
+      this.keys = {};
+      this.pointerControls = {
+        leftPointerId: null,
+        rightPointerId: null,
+        launcherPointerId: null
+      };
+
+      this.lastTrailAt = 0;
+      this.lastNudgeAt = 0;
+    }
+
+    preload() {
+      this.load.image(
+        "playfield",
+        assetPath(
+          requiredAsset(
+            "playfield",
+            "playfield.png"
+          )
+        )
+      );
+
+      this.load.image(
+        "ball",
+        assetPath(
+          requiredAsset(
+            "ball",
+            "ball.png"
+          )
+        )
+      );
+
+      this.load.image(
+        "flipperLeft",
+        assetPath(
+          requiredAsset(
+            "flipperLeft",
+            "flipper-left.png"
+          )
+        )
+      );
+
+      this.load.image(
+        "flipperRight",
+        assetPath(
+          requiredAsset(
+            "flipperRight",
+            "flipper-right.png"
+          )
+        )
+      );
+
+      this.load.image(
+        "bumper",
+        assetPath(
+          requiredAsset(
+            "bumper",
+            "bumper.png"
+          )
+        )
+      );
+
+      this.load.image(
+        "slingshotLeft",
+        assetPath(
+          requiredAsset(
+            "slingshotLeft",
+            "slingshot-left.png"
+          )
+        )
+      );
+
+      this.load.image(
+        "slingshotRight",
+        assetPath(
+          requiredAsset(
+            "slingshotRight",
+            "slingshot-right.png"
+          )
+        )
+      );
+
+      this.load.image(
+        "reactorJackpot",
+        assetPath(
+          requiredAsset(
+            "reactorJackpot",
+            "reactor-jackpot.png"
+          )
+        )
+      );
+
+      if (
+        CONFIG.app?.debug &&
+        CONFIG.assets?.reference
+          ?.collisionMap
+      ) {
+        this.load.image(
+          "collisionMap",
+          assetPath(
+            CONFIG.assets.reference
+              .collisionMap
+          )
+        );
+      }
+
+      this.load.on(
+        "loaderror",
+        (file) => {
+          console.error(
+            `[PumpBall] Asset failed to load: ${file.src}`
+          );
+        }
+      );
+    }
+
+    create() {
+      runtime.scene = this;
+
+      this.matter.world.setGravity(
+        0,
+        Number(
+          CONFIG.physics?.gravity?.y
+        ) || 0.92,
+        Number(
+          CONFIG.physics?.gravity
+            ?.scale
+        ) || 0.001
+      );
+
+      this.matter.world.engine
+        .positionIterations =
+        Number(
+          CONFIG.physics?.timing
+            ?.positionIterations
+        ) || 10;
+
+      this.matter.world.engine
+        .velocityIterations =
+        Number(
+          CONFIG.physics?.timing
+            ?.velocityIterations
+        ) || 10;
+
+      this.matter.world.engine
+        .constraintIterations =
+        Number(
+          CONFIG.physics?.timing
+            ?.constraintIterations
+        ) || 4;
+
+      this.createBackground();
+      this.createStaticTableGeometry();
+      this.createMechanisms();
+      this.createEffects();
+      this.createControls();
+      this.bindMatterEvents();
+
+      if (
+        CONFIG.app?.debug &&
+        this.textures.exists(
+          "collisionMap"
+        )
+      ) {
+        this.add
+          .image(
+            WORLD.width / 2,
+            WORLD.height / 2,
+            "collisionMap"
+          )
+          .setDisplaySize(
+            WORLD.width,
+            WORLD.height
+          )
+          .setAlpha(0.28)
+          .setDepth(DEPTH.debug);
+      }
+
+      if (
+        CONFIG.app
+          ?.showPhysicsBodies
+      ) {
+        this.matter.world
+          .createDebugGraphic();
+
+        this.matter.world
+          .drawDebug = true;
+      }
+
+      this.state.ready = true;
+
+      this.updateHud();
+
+      emit(
+        "pumpball:game-ready"
+      );
+    }
+
+        createBackground() {
+      this.playfield = this.add
+        .image(
+          WORLD.width / 2,
+          WORLD.height / 2,
+          "playfield"
+        )
+        .setDisplaySize(
+          WORLD.width,
+          WORLD.height
+        )
+        .setDepth(
+          DEPTH.playfield
+        );
+
+      this.add
+        .rectangle(
+          WORLD.width / 2,
+          WORLD.height / 2,
+          WORLD.width,
+          WORLD.height,
+          0x000000,
+          0.04
+        )
+        .setDepth(
+          DEPTH.decor
+        );
+
+      this.vignette = this.add
+        .graphics()
+        .setDepth(
+          DEPTH.effects
+        );
+
+      this.vignette.fillStyle(
+        0x000000,
+        0.2
+      );
+
+      this.vignette.fillRect(
+        0,
+        0,
+        WORLD.width,
+        42
+      );
+
+      this.vignette.fillRect(
+        0,
+        WORLD.height - 62,
+        WORLD.width,
+        62
+      );
+
+      this.vignette.fillRect(
+        0,
+        0,
+        34,
+        WORLD.height
+      );
+
+      this.vignette.fillRect(
+        WORLD.width - 34,
+        0,
+        34,
+        WORLD.height
+      );
+    }
+
+    createStaticTableGeometry() {
+      const wallSettings =
+        CONFIG.physics?.walls || {};
+
+      const railSettings =
+        CONFIG.physics?.rails || {};
+
+      const tableBounds =
+        CONFIG.table?.bounds || {
+          left: 42,
+          right: 678,
+          top: 42,
+          bottom: 1238
+        };
+
+      const wallThickness =
+        Number(
+          wallSettings.thickness
+        ) || 28;
+
+      const wallOptions = {
+        isStatic: true,
+
+        restitution:
+          Number(
+            wallSettings.restitution
+          ) || 0.48,
+
+        friction:
+          Number(
+            wallSettings.friction
+          ) || 0.008,
+
+        label: LABELS.wall
+      };
+
+      this.createStaticRectangle(
+        tableBounds.left -
+          wallThickness / 2,
+        WORLD.height / 2,
+        wallThickness,
+        WORLD.height,
+        wallOptions
+      );
+
+      this.createStaticRectangle(
+        tableBounds.right +
+          wallThickness / 2,
+        WORLD.height / 2,
+        wallThickness,
+        WORLD.height,
+        wallOptions
+      );
+
+      this.createStaticRectangle(
+        WORLD.width / 2,
+        tableBounds.top -
+          wallThickness / 2,
+        WORLD.width,
+        wallThickness,
+        wallOptions
+      );
+
+      this.createStaticRectangle(
+        120,
+        226,
+        210,
+        24,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              -28
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        600,
+        226,
+        210,
+        24,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              28
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        113,
+        440,
+        190,
+        22,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              8
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        607,
+        440,
+        190,
+        22,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              -8
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        90,
+        735,
+        270,
+        24,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              18
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        630,
+        735,
+        270,
+        24,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              -18
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        118,
+        1027,
+        206,
+        26,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              56
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        602,
+        1027,
+        206,
+        26,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              -56
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        216,
+        1165,
+        214,
+        24,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              24
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        504,
+        1165,
+        214,
+        24,
+        {
+          ...wallOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              -24
+            )
+        }
+      );
+
+      this.createLauncherLane(
+        railSettings,
+        wallOptions
+      );
+
+      this.createDrainSensor();
+    }
+
+    createStaticRectangle(
+      x,
+      y,
+      width,
+      height,
+      options = {}
+    ) {
+      const body =
+        this.matter.add.rectangle(
+          x,
+          y,
+          width,
+          height,
+          {
+            isStatic: true,
+            ...options
+          }
+        );
+
+      this.staticBodies.push(body);
+
+      return body;
+    }
+
+    createLauncherLane(
+      railSettings,
+      wallOptions
+    ) {
+      const laneX =
+        Number(
+          CONFIG.plunger?.laneX
+        ) || 662;
+
+      const launcherRestY =
+        Number(
+          CONFIG.plunger
+            ?.ballStartY
+        ) || 1122;
+
+      const laneRestitution =
+        Number(
+          railSettings.restitution
+        ) || 0.62;
+
+      const laneFriction =
+        Number(
+          railSettings.friction
+        ) || 0.004;
+
+      const laneOptions = {
+        ...wallOptions,
+        restitution:
+          laneRestitution,
+        friction:
+          laneFriction
+      };
+
+      this.createStaticRectangle(
+        laneX - 41,
+        882,
+        18,
+        600,
+        laneOptions
+      );
+
+      this.createStaticRectangle(
+        laneX + 41,
+        900,
+        18,
+        636,
+        laneOptions
+      );
+
+      this.createStaticRectangle(
+        laneX,
+        1218,
+        92,
+        18,
+        {
+          ...laneOptions,
+          label:
+            LABELS.launcherSupport
+        }
+      );
+
+      this.createStaticRectangle(
+        608,
+        555,
+        170,
+        20,
+        {
+          ...laneOptions,
+          angle:
+            Phaser.Math.DegToRad(
+              -30
+            )
+        }
+      );
+
+      this.createStaticRectangle(
+        laneX - 30,
+        launcherRestY + 28,
+        20,
+        70,
+        {
+          ...laneOptions,
+          label:
+            LABELS.launcherSupport
+        }
+      );
+
+      this.launcherTrack = this.add
+        .rectangle(
+          laneX,
+          998,
+          72,
+          436,
+          0x151522,
+          0.34
+        )
+        .setStrokeStyle(
+          2,
+          0x8f54ff,
+          0.28
+        )
+        .setDepth(
+          DEPTH.decor
+        );
+
+      this.launcherSpring = this.add
+        .rectangle(
+          laneX,
+          1180,
+          18,
+          74,
+          0xa971ff,
+          0.55
+        )
+        .setDepth(
+          DEPTH.mechanisms
+        );
+
+      this.launcherCap = this.add
+        .ellipse(
+          laneX,
+          1144,
+          48,
+          20,
+          0xc7a7ff,
+          0.8
+        )
+        .setDepth(
+          DEPTH.mechanisms
+        );
+
+      this.launcherMeter = this.add
+        .rectangle(
+          laneX + 55,
+          1062,
+          8,
+          0,
+          0x9f67ff,
+          0.9
+        )
+        .setOrigin(
+          0.5,
+          1
+        )
+        .setDepth(
+          DEPTH.mechanisms
+        );
+    }
+
+    createDrainSensor() {
+      const drain =
+        CONFIG.table?.drain || {
+          x: 360,
+          y: 1246,
+          width: 160,
+          height: 48
+        };
+
+      const body =
+        this.matter.add.rectangle(
+          Number(drain.x) || 360,
+          Number(drain.y) || 1246,
+          Number(drain.width) ||
+            160,
+          Number(drain.height) ||
+            48,
+          {
+            isStatic: true,
+            isSensor: true,
+            label:
+              LABELS.drain
+          }
+        );
+
+      this.staticBodies.push(body);
+    }
+
+    createMechanisms() {
+      this.createFlippers();
+      this.createBumpers();
+      this.createSlingshots();
+      this.createReactor();
+    }
+
+    createFlippers() {
+      const settings =
+        CONFIG.flippers || {};
+
+      const leftSettings =
+        settings.left || {};
+
+      const rightSettings =
+        settings.right || {};
+
+      const leftX =
+        Number(
+          leftSettings.pivotX
+        ) || 285;
+
+      const leftY =
+        Number(
+          leftSettings.pivotY
+        ) || 1115;
+
+      const rightX =
+        Number(
+          rightSettings.pivotX
+        ) || 435;
+
+      const rightY =
+        Number(
+          rightSettings.pivotY
+        ) || 1115;
+
+      const leftAngle =
+        Phaser.Math.DegToRad(
+          Number(
+            leftSettings
+              .restAngleDegrees
+          ) || 24
+        );
+
+      const rightAngle =
+        Phaser.Math.DegToRad(
+          Number(
+            rightSettings
+              .restAngleDegrees
+          ) || -24
+        );
+
+      this.leftFlipper = this.matter.add
+        .image(
+          leftX,
+          leftY,
+          "flipperLeft",
+          null,
+          {
+            label:
+              LABELS.flipperLeft,
+
+            density:
+              Number(
+                settings.density
+              ) || 0.02,
+
+            friction:
+              Number(
+                settings.friction
+              ) || 0.01,
+
+            restitution:
+              Number(
+                settings.restitution
+              ) || 0.34,
+
+            ignoreGravity: true
+          }
+        )
+        .setDepth(
+          DEPTH.mechanisms
+        )
+        .setOrigin(
+          0.2,
+          0.5
+        )
+        .setAngle(
+          Phaser.Math.RadToDeg(
+            leftAngle
+          )
+        );
+
+      this.rightFlipper = this.matter.add
+        .image(
+          rightX,
+          rightY,
+          "flipperRight",
+          null,
+          {
+            label:
+              LABELS.flipperRight,
+
+            density:
+              Number(
+                settings.density
+              ) || 0.02,
+
+            friction:
+              Number(
+                settings.friction
+              ) || 0.01,
+
+            restitution:
+              Number(
+                settings.restitution
+              ) || 0.34,
+
+            ignoreGravity: true
+          }
+        )
+        .setDepth(
+          DEPTH.mechanisms
+        )
+        .setOrigin(
+          0.8,
+          0.5
+        )
+        .setAngle(
+          Phaser.Math.RadToDeg(
+            rightAngle
+          )
+        );
+
+      this.leftFlipper
+        .setFixedRotation();
+
+      this.rightFlipper
+        .setFixedRotation();
+
+      this.leftFlipperBody =
+        this.leftFlipper.body;
+
+      this.rightFlipperBody =
+        this.rightFlipper.body;
+
+      this.leftFlipperBody.label =
+        LABELS.flipperLeft;
+
+      this.rightFlipperBody.label =
+        LABELS.flipperRight;
+    }
+
+    createBumpers() {
+      const bumperDefinitions =
+        Array.isArray(
+          CONFIG.table?.bumpers
+        )
+          ? CONFIG.table.bumpers
+          : [];
+
+      bumperDefinitions.forEach(
+        (
+          definition,
+          index
+        ) => {
+          const radius =
+            Number(
+              definition.radius
+            ) || 38;
+
+          const sprite =
+            this.matter.add.image(
+              Number(
+                definition.x
+              ) || 0,
+              Number(
+                definition.y
+              ) || 0,
+              "bumper",
+              null,
+              {
+                isStatic: true,
+
+                shape: {
+                  type: "circle",
+                  radius
+                },
+
+                restitution:
+                  Number(
+                    CONFIG.physics
+                      ?.rubber
+                      ?.restitution
+                  ) || 0.82,
+
+                friction:
+                  Number(
+                    CONFIG.physics
+                      ?.rubber
+                      ?.friction
+                  ) || 0.003,
+
+                label:
+                  LABELS.bumper
+              }
+            );
+
+          sprite
+            .setDisplaySize(
+              radius * 2.35,
+              radius * 2.35
+            )
+            .setDepth(
+              DEPTH.mechanisms
+            );
+
+          sprite.body.label =
+            LABELS.bumper;
+
+          sprite.setData(
+            "bumper",
+            {
+              ...definition,
+              index,
+              lastHitAt: 0
+            }
+          );
+
+          this.bumpers.push(
+            sprite
+          );
+        }
+      );
+    }
+
+    createSlingshots() {
+      const definitions =
+        Array.isArray(
+          CONFIG.table
+            ?.slingshots
+        )
+          ? CONFIG.table
+              .slingshots
+          : [];
+
+      const leftDefinition =
+        definitions.find(
+          (item) =>
+            item.side === "left"
+        ) || {
+          x: 215,
+          y: 960,
+          score: 250,
+          impulse: 1.65
+        };
+
+      const rightDefinition =
+        definitions.find(
+          (item) =>
+            item.side === "right"
+        ) || {
+          x: 505,
+          y: 960,
+          score: 250,
+          impulse: 1.65
+        };
+
+      this.leftSlingshot =
+        this.matter.add.image(
+          Number(
+            leftDefinition.x
+          ) || 215,
+          Number(
+            leftDefinition.y
+          ) || 960,
+          "slingshotLeft",
+          null,
+          {
+            isStatic: true,
+            restitution: 0.88,
+            friction: 0.002,
+            label:
+              LABELS.slingshotLeft
+          }
+        );
+
+      this.leftSlingshot
+        .setDepth(
+          DEPTH.mechanisms
+        )
+        .setData(
+          "slingshot",
+          {
+            ...leftDefinition,
+            lastHitAt: 0
+          }
+        );
+
+      this.leftSlingshot.body.label =
+        LABELS.slingshotLeft;
+
+      this.rightSlingshot =
+        this.matter.add.image(
+          Number(
+            rightDefinition.x
+          ) || 505,
+          Number(
+            rightDefinition.y
+          ) || 960,
+          "slingshotRight",
+          null,
+          {
+            isStatic: true,
+            restitution: 0.88,
+            friction: 0.002,
+            label:
+              LABELS.slingshotRight
+          }
+        );
+
+      this.rightSlingshot
+        .setDepth(
+          DEPTH.mechanisms
+        )
+        .setData(
+          "slingshot",
+          {
+            ...rightDefinition,
+            lastHitAt: 0
+          }
+        );
+
+      this.rightSlingshot.body.label =
+        LABELS.slingshotRight;
+    }
+
+        createReactor() {
+      const definition =
+        CONFIG.table?.reactor || {
+          x: 360,
+          y: 760,
+          radius: 54,
+          score: 2500,
+          impulse: 2.15,
+          cooldownMs: 280
+        };
+
+      const x =
+        Number(definition.x) || 360;
+
+      const y =
+        Number(definition.y) || 760;
+
+      const radius =
+        Number(definition.radius) || 54;
+
+      this.reactorGlow = this.add
+        .circle(
+          x,
+          y,
+          radius * 1.24,
+          0x8f4dff,
+          0.18
+        )
+        .setDepth(
+          DEPTH.decor
+        );
+
+      this.reactor = this.matter.add
+        .image(
+          x,
+          y,
+          "reactorJackpot",
+          null,
+          {
+            isStatic: true,
+
+            shape: {
+              type: "circle",
+              radius
+            },
+
+            restitution:
+              Number(
+                CONFIG.physics?.rubber
+                  ?.restitution
+              ) || 0.82,
+
+            friction:
+              Number(
+                CONFIG.physics?.rubber
+                  ?.friction
+              ) || 0.003,
+
+            label: LABELS.reactor
+          }
+        )
+        .setDisplaySize(
+          radius * 2.35,
+          radius * 2.35
+        )
+        .setDepth(
+          DEPTH.mechanisms
+        );
+
+      this.reactor.body.label =
+        LABELS.reactor;
+
+      this.reactor.setData(
+        "reactor",
+        {
+          ...definition,
+          lastHitAt: 0,
+          hitCount: 0
+        }
+      );
+
+      this.tweens.add({
+        targets: this.reactorGlow,
+        alpha: {
+          from: 0.11,
+          to: 0.3
+        },
+        scale: {
+          from: 0.94,
+          to: 1.08
+        },
+        duration: 920,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.InOut"
+      });
+    }
+
+    createEffects() {
+      this.screenFlash = this.add
+        .rectangle(
+          WORLD.width / 2,
+          WORLD.height / 2,
+          WORLD.width,
+          WORLD.height,
+          0xffffff,
+          0
+        )
+        .setDepth(
+          DEPTH.flash
+        )
+        .setScrollFactor(0);
+
+      this.createEffectTextures();
+    }
+
+    createEffectTextures() {
+      if (
+        !this.textures.exists(
+          "pumpball-particle"
+        )
+      ) {
+        const particle =
+          this.make.graphics({
+            x: 0,
+            y: 0,
+            add: false
+          });
+
+        particle.fillStyle(
+          0xffffff,
+          1
+        );
+
+        particle.fillCircle(
+          6,
+          6,
+          6
+        );
+
+        particle.generateTexture(
+          "pumpball-particle",
+          12,
+          12
+        );
+
+        particle.destroy();
+      }
+
+      if (
+        !this.textures.exists(
+          "pumpball-trail"
+        )
+      ) {
+        const trail =
+          this.make.graphics({
+            x: 0,
+            y: 0,
+            add: false
+          });
+
+        trail.fillStyle(
+          0xb893ff,
+          1
+        );
+
+        trail.fillCircle(
+          8,
+          8,
+          8
+        );
+
+        trail.generateTexture(
+          "pumpball-trail",
+          16,
+          16
+        );
+
+        trail.destroy();
+      }
+    }
+
+    createControls() {
+      this.keys.left =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.LEFT
+        );
+
+      this.keys.leftAlt =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.A
+        );
+
+      this.keys.right =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.RIGHT
+        );
+
+      this.keys.rightAlt =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.D
+        );
+
+      this.keys.launch =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.SPACE
+        );
+
+      this.keys.launchAlt =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.DOWN
+        );
+
+      this.keys.nudgeLeft =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.Q
+        );
+
+      this.keys.nudgeRight =
+        this.input.keyboard.addKey(
+          Phaser.Input.Keyboard.KeyCodes.E
+        );
+
+      this.input.on(
+        "pointerdown",
+        (pointer) => {
+          this.handlePointerDown(
+            pointer
+          );
+        }
+      );
+
+      this.input.on(
+        "pointerup",
+        (pointer) => {
+          this.handlePointerUp(
+            pointer
+          );
+        }
+      );
+
+      this.input.on(
+        "pointerupoutside",
+        (pointer) => {
+          this.handlePointerUp(
+            pointer
+          );
+        }
+      );
+
+      this.input.on(
+        "pointercancel",
+        (pointer) => {
+          this.handlePointerUp(
+            pointer
+          );
+        }
+      );
+
+      this.input.keyboard.on(
+        "keydown-Q",
+        () => {
+          this.nudge(-1);
+        }
+      );
+
+      this.input.keyboard.on(
+        "keydown-E",
+        () => {
+          this.nudge(1);
+        }
+      );
+
+      this.events.once(
+        Phaser.Scenes.Events.SHUTDOWN,
+        () => {
+          this.input.removeAllListeners();
+        }
+      );
+    }
+
+    handlePointerDown(pointer) {
+      if (
+        !this.state.playing ||
+        this.state.paused ||
+        this.state.gameOver
+      ) {
+        return;
+      }
+
+      const worldPoint =
+        this.getPointerWorldPosition(
+          pointer
+        );
+
+      const launcherZoneStart =
+        Number(
+          CONFIG.controls?.touch
+            ?.launcherZoneStartX
+        ) || WORLD.width * 0.82;
+
+      const leftZoneEnd =
+        Number(
+          CONFIG.controls?.touch
+            ?.leftZoneEndX
+        ) || WORLD.width * 0.43;
+
+      const rightZoneStart =
+        Number(
+          CONFIG.controls?.touch
+            ?.rightZoneStartX
+        ) || WORLD.width * 0.57;
+
+      if (
+        !this.state.ballLaunched &&
+        worldPoint.x >=
+          launcherZoneStart
+      ) {
+        this.pointerControls
+          .launcherPointerId =
+          pointer.id;
+
+        this.beginLauncherCharge();
+
+        return;
+      }
+
+      if (
+        worldPoint.x <= leftZoneEnd
+      ) {
+        this.pointerControls
+          .leftPointerId =
+          pointer.id;
+
+        this.state.leftFlipperPressed =
+          true;
+
+        vibrate(8);
+
+        return;
+      }
+
+      if (
+        worldPoint.x >=
+        rightZoneStart
+      ) {
+        this.pointerControls
+          .rightPointerId =
+          pointer.id;
+
+        this.state.rightFlipperPressed =
+          true;
+
+        vibrate(8);
+      }
+    }
+
+    handlePointerUp(pointer) {
+      if (
+        this.pointerControls
+          .leftPointerId ===
+        pointer.id
+      ) {
+        this.pointerControls
+          .leftPointerId = null;
+
+        this.state.leftFlipperPressed =
+          false;
+      }
+
+      if (
+        this.pointerControls
+          .rightPointerId ===
+        pointer.id
+      ) {
+        this.pointerControls
+          .rightPointerId = null;
+
+        this.state.rightFlipperPressed =
+          false;
+      }
+
+      if (
+        this.pointerControls
+          .launcherPointerId ===
+        pointer.id
+      ) {
+        this.pointerControls
+          .launcherPointerId = null;
+
+        this.releaseLauncher();
+      }
+    }
+
+    getPointerWorldPosition(
+      pointer
+    ) {
+      const camera =
+        this.cameras.main;
+
+      return camera.getWorldPoint(
+        pointer.x,
+        pointer.y
+      );
+    }
+
+    bindMatterEvents() {
+      this.matter.world.on(
+        "collisionstart",
+        (event) => {
+          this.handleCollisionStart(
+            event
+          );
+        }
+      );
+
+      this.matter.world.on(
+        "collisionactive",
+        (event) => {
+          this.handleCollisionActive(
+            event
+          );
+        }
+      );
+    }
+
+    handleCollisionStart(event) {
+      if (
+        !this.state.playing ||
+        !this.ball?.body
+      ) {
+        return;
+      }
+
+      event.pairs.forEach(
+        (pair) => {
+          if (
+            !pairContainsLabel(
+              pair,
+              LABELS.ball
+            )
+          ) {
+            return;
+          }
+
+          if (
+            pairContainsLabel(
+              pair,
+              LABELS.drain
+            )
+          ) {
+            this.handleDrain();
+
+            return;
+          }
+
+          if (
+            pairContainsLabel(
+              pair,
+              LABELS.bumper
+            )
+          ) {
+            const otherBody =
+              getOtherBody(
+                pair,
+                LABELS.ball
+              );
+
+            this.handleBumperHit(
+              otherBody
+            );
+
+            return;
+          }
+
+          if (
+            pairContainsLabel(
+              pair,
+              LABELS.slingshotLeft
+            )
+          ) {
+            this.handleSlingshotHit(
+              this.leftSlingshot,
+              -1
+            );
+
+            return;
+          }
+
+          if (
+            pairContainsLabel(
+              pair,
+              LABELS.slingshotRight
+            )
+          ) {
+            this.handleSlingshotHit(
+              this.rightSlingshot,
+              1
+            );
+
+            return;
+          }
+
+          if (
+            pairContainsLabel(
+              pair,
+              LABELS.reactor
+            )
+          ) {
+            this.handleReactorHit();
+
+            return;
+          }
+
+          if (
+            pairContainsLabel(
+              pair,
+              LABELS.flipperLeft
+            ) ||
+            pairContainsLabel(
+              pair,
+              LABELS.flipperRight
+            )
+          ) {
+            this.handleFlipperContact(
+              pair
+            );
+          }
+        }
+      );
+    }
+
+    handleCollisionActive(event) {
+      if (
+        !this.state.playing ||
+        !this.ball?.body ||
+        !this.state.ballLaunched
+      ) {
+        return;
+      }
+
+      event.pairs.forEach(
+        (pair) => {
+          if (
+            !pairContainsLabel(
+              pair,
+              LABELS.ball
+            )
+          ) {
+            return;
+          }
+
+          if (
+            pairContainsLabel(
+              pair,
+              LABELS.flipperLeft
+            ) ||
+            pairContainsLabel(
+              pair,
+              LABELS.flipperRight
+            )
+          ) {
+            this.limitBallVelocity();
+          }
+        }
+      );
+    }
+
+    findGameObjectFromBody(
+      body
+    ) {
+      if (!body) {
+        return null;
+      }
+
+      if (body.gameObject) {
+        return body.gameObject;
+      }
+
+      if (body.parent?.gameObject) {
+        return body.parent.gameObject;
+      }
+
+      return null;
+    }
+
+    handleBumperHit(body) {
+      const bumper =
+        this.findGameObjectFromBody(
+          body
+        );
+
+      if (!bumper) {
+        return;
+      }
+
+      const data =
+        bumper.getData(
+          "bumper"
+        ) || {};
+
+      const now =
+        this.time.now;
+
+      const cooldown =
+        Number(
+          data.cooldownMs
+        ) || 120;
+
+      if (
+        now -
+          Number(
+            data.lastHitAt
+          ) <
+        cooldown
+      ) {
+        return;
+      }
+
+      data.lastHitAt = now;
+
+      bumper.setData(
+        "bumper",
+        data
+      );
+
+      const score =
+        Number(data.score) ||
+        Number(
+          CONFIG.scoring?.bumper
+        ) ||
+        500;
+
+      const impulse =
+        Number(data.impulse) ||
+        Number(
+          CONFIG.physics?.bumpers
+            ?.impulse
+        ) ||
+        1.45;
+
+      this.applyRadialImpulse(
+        bumper.x,
+        bumper.y,
+        impulse
+      );
+
+      this.addScore(
+        score,
+        bumper.x,
+        bumper.y - 18,
+        "BUMPER"
+      );
+
+      this.pulseGameObject(
+        bumper,
+        1.16,
+        105
+      );
+
+      this.spawnImpactParticles(
+        bumper.x,
+        bumper.y,
+        12
+      );
+
+      this.flashScreen(
+        0xffffff,
+        0.09,
+        65
+      );
+
+      this.shakeCamera(
+        0.0025,
+        65
+      );
+
+      vibrate(12);
+    }
+
+    handleSlingshotHit(
+      slingshot,
+      horizontalDirection
+    ) {
+      if (!slingshot) {
+        return;
+      }
+
+      const data =
+        slingshot.getData(
+          "slingshot"
+        ) || {};
+
+      const now =
+        this.time.now;
+
+      const cooldown =
+        Number(
+          data.cooldownMs
+        ) || 130;
+
+      if (
+        now -
+          Number(
+            data.lastHitAt
+          ) <
+        cooldown
+      ) {
+        return;
+      }
+
+      data.lastHitAt = now;
+
+      slingshot.setData(
+        "slingshot",
+        data
+      );
+
+      const score =
+        Number(data.score) ||
+        Number(
+          CONFIG.scoring?.slingshot
+        ) ||
+        250;
+
+      const impulse =
+        Number(data.impulse) ||
+        1.65;
+
+      this.ball.applyForce({
+        x:
+          horizontalDirection *
+          impulse *
+          0.00075,
+        y: -impulse * 0.001
+      });
+
+      this.addScore(
+        score,
+        slingshot.x,
+        slingshot.y - 28,
+        "SLING"
+      );
+
+      this.pulseGameObject(
+        slingshot,
+        1.08,
+        90
+      );
+
+      this.spawnImpactParticles(
+        slingshot.x,
+        slingshot.y,
+        8
+      );
+
+      this.shakeCamera(
+        0.0018,
+        50
+      );
+
+      vibrate(9);
+    }
+
+    handleReactorHit() {
+      if (!this.reactor) {
+        return;
+      }
+
+      const data =
+        this.reactor.getData(
+          "reactor"
+        ) || {};
+
+      const now =
+        this.time.now;
+
+      const cooldown =
+        Number(
+          data.cooldownMs
+        ) || 280;
+
+      if (
+        now -
+          Number(
+            data.lastHitAt
+          ) <
+        cooldown
+      ) {
+        return;
+      }
+
+      data.lastHitAt = now;
+
+      data.hitCount =
+        Number(data.hitCount) + 1;
+
+      this.reactor.setData(
+        "reactor",
+        data
+      );
+
+      const baseScore =
+        Number(data.score) ||
+        Number(
+          CONFIG.scoring?.reactor
+        ) ||
+        2500;
+
+      const jackpotEvery =
+        Number(
+          CONFIG.gameModes?.reactor
+            ?.jackpotEveryHits
+        ) || 5;
+
+      const jackpotScore =
+        Number(
+          CONFIG.scoring
+            ?.reactorJackpot
+        ) || 10000;
+
+      const isJackpot =
+        data.hitCount %
+          jackpotEvery ===
+        0;
+
+      const awardedScore =
+        isJackpot
+          ? jackpotScore
+          : baseScore;
+
+      const impulse =
+        Number(data.impulse) ||
+        2.15;
+
+      this.applyRadialImpulse(
+        this.reactor.x,
+        this.reactor.y,
+        impulse
+      );
+
+      this.addScore(
+        awardedScore,
+        this.reactor.x,
+        this.reactor.y - 44,
+        isJackpot
+          ? "JACKPOT"
+          : "REACTOR"
+      );
+
+      this.pulseGameObject(
+        this.reactor,
+        isJackpot ? 1.22 : 1.1,
+        isJackpot ? 180 : 110
+      );
+
+      this.tweens.add({
+        targets:
+          this.reactorGlow,
+        alpha:
+          isJackpot
+            ? 0.72
+            : 0.48,
+        scale:
+          isJackpot
+            ? 1.42
+            : 1.2,
+        duration:
+          isJackpot
+            ? 180
+            : 100,
+        yoyo: true,
+        ease: "Quad.Out"
+      });
+
+      this.spawnImpactParticles(
+        this.reactor.x,
+        this.reactor.y,
+        isJackpot ? 30 : 16
+      );
+
+      this.flashScreen(
+        isJackpot
+          ? 0xd6ff53
+          : 0xa36bff,
+        isJackpot
+          ? 0.28
+          : 0.14,
+        isJackpot
+          ? 170
+          : 85
+      );
+
+      this.shakeCamera(
+        isJackpot
+          ? 0.009
+          : 0.004,
+        isJackpot
+          ? 190
+          : 90
+      );
+
+      vibrate(
+        isJackpot
+          ? [25, 25, 45]
+          : 16
+      );
+    }
+
+        handleFlipperContact(pair) {
+      if (
+        !this.ball?.body ||
+        !this.state.ballLaunched
+      ) {
+        return;
+      }
+
+      const leftContact =
+        pairContainsLabel(
+          pair,
+          LABELS.flipperLeft
+        );
+
+      const rightContact =
+        pairContainsLabel(
+          pair,
+          LABELS.flipperRight
+        );
+
+      const flipperPressed =
+        leftContact
+          ? this.state
+              .leftFlipperPressed
+          : this.state
+              .rightFlipperPressed;
+
+      if (!flipperPressed) {
+        return;
+      }
+
+      const direction =
+        leftContact ? 1 : -1;
+
+      const boost =
+        Number(
+          CONFIG.flippers
+            ?.contactBoost
+        ) || 1.18;
+
+      const upwardForce =
+        Number(
+          CONFIG.flippers
+            ?.contactUpwardForce
+        ) || 0.00165;
+
+      const horizontalForce =
+        Number(
+          CONFIG.flippers
+            ?.contactHorizontalForce
+        ) || 0.00042;
+
+      this.ball.applyForce({
+        x:
+          direction *
+          horizontalForce *
+          boost,
+        y:
+          -upwardForce *
+          boost
+      });
+
+      this.limitBallVelocity();
+
+      this.spawnImpactParticles(
+        this.ball.x,
+        this.ball.y,
+        5
+      );
+
+      vibrate(6);
+    }
+
+    applyRadialImpulse(
+      sourceX,
+      sourceY,
+      strength
+    ) {
+      if (!this.ball?.body) {
+        return;
+      }
+
+      let deltaX =
+        this.ball.x - sourceX;
+
+      let deltaY =
+        this.ball.y - sourceY;
+
+      let magnitude =
+        Math.hypot(
+          deltaX,
+          deltaY
+        );
+
+      if (magnitude < 0.001) {
+        deltaX =
+          Phaser.Math.FloatBetween(
+            -0.5,
+            0.5
+          );
+
+        deltaY = -1;
+
+        magnitude =
+          Math.hypot(
+            deltaX,
+            deltaY
+          );
+      }
+
+      const normalizedX =
+        deltaX / magnitude;
+
+      const normalizedY =
+        deltaY / magnitude;
+
+      const forceScale =
+        Number(
+          CONFIG.physics
+            ?.impulseScale
+        ) || 0.00115;
+
+      this.ball.applyForce({
+        x:
+          normalizedX *
+          strength *
+          forceScale,
+
+        y:
+          normalizedY *
+          strength *
+          forceScale
+      });
+
+      this.limitBallVelocity();
+    }
+
+    addScore(
+      amount,
+      x = this.ball?.x,
+      y = this.ball?.y,
+      label = ""
+    ) {
+      if (
+        !this.state.playing ||
+        this.state.gameOver
+      ) {
+        return;
+      }
+
+      const awarded =
+        Math.max(
+          0,
+          Math.floor(
+            Number(amount) || 0
+          )
+        );
+
+      if (awarded <= 0) {
+        return;
+      }
+
+      this.state.score += awarded;
+
+      this.updateHud();
+
+      this.showFloatingScore(
+        awarded,
+        Number(x) ||
+          WORLD.width / 2,
+        Number(y) ||
+          WORLD.height / 2,
+        label
+      );
+
+      emit(
+        "pumpball:score-changed",
+        {
+          score:
+            this.state.score,
+          amount: awarded,
+          label
+        }
+      );
+    }
+
+    showFloatingScore(
+      amount,
+      x,
+      y,
+      label = ""
+    ) {
+      const content = label
+        ? `${label}\n+${formatScore(
+            amount
+          )}`
+        : `+${formatScore(
+            amount
+          )}`;
+
+      const text = this.add
+        .text(
+          x,
+          y,
+          content,
+          {
+            fontFamily:
+              "Arial, Helvetica, sans-serif",
+
+            fontSize:
+              label
+                ? "24px"
+                : "22px",
+
+            fontStyle: "bold",
+
+            color: "#ffffff",
+
+            align: "center",
+
+            stroke: "#19062f",
+
+            strokeThickness: 6,
+
+            lineSpacing: 2
+          }
+        )
+        .setOrigin(
+          0.5,
+          0.5
+        )
+        .setDepth(
+          DEPTH.text
+        )
+        .setScale(0.78)
+        .setAlpha(0);
+
+      this.tweens.add({
+        targets: text,
+
+        y: y - 58,
+
+        alpha: {
+          from: 0,
+          to: 1
+        },
+
+        scale: {
+          from: 0.78,
+          to: 1
+        },
+
+        duration: 120,
+
+        ease: "Back.Out",
+
+        onComplete: () => {
+          this.tweens.add({
+            targets: text,
+
+            y: text.y - 30,
+
+            alpha: 0,
+
+            duration: 460,
+
+            delay: 180,
+
+            ease: "Quad.In",
+
+            onComplete: () => {
+              text.destroy();
+            }
+          });
+        }
+      });
+    }
+
+    pulseGameObject(
+      target,
+      scale,
+      duration
+    ) {
+      if (
+        !target ||
+        !target.active
+      ) {
+        return;
+      }
+
+      const baseScaleX =
+        target.scaleX;
+
+      const baseScaleY =
+        target.scaleY;
+
+      this.tweens.killTweensOf(
+        target
+      );
+
+      this.tweens.add({
+        targets: target,
+
+        scaleX:
+          baseScaleX * scale,
+
+        scaleY:
+          baseScaleY * scale,
+
+        duration:
+          Math.max(
+            40,
+            duration
+          ),
+
+        yoyo: true,
+
+        ease: "Quad.Out",
+
+        onComplete: () => {
+          if (
+            target &&
+            target.active
+          ) {
+            target.setScale(
+              baseScaleX,
+              baseScaleY
+            );
+          }
+        }
+      });
+    }
+
+    spawnImpactParticles(
+      x,
+      y,
+      count = 10
+    ) {
+      const particleCount =
+        Phaser.Math.Clamp(
+          Math.floor(count),
+          1,
+          40
+        );
+
+      for (
+        let index = 0;
+        index < particleCount;
+        index += 1
+      ) {
+        const angle =
+          Phaser.Math.FloatBetween(
+            0,
+            Math.PI * 2
+          );
+
+        const distance =
+          Phaser.Math.FloatBetween(
+            34,
+            98
+          );
+
+        const particle =
+          this.add.image(
+            x,
+            y,
+            "pumpball-particle"
+          );
+
+        particle
+          .setDepth(
+            DEPTH.effects
+          )
+          .setScale(
+            Phaser.Math.FloatBetween(
+              0.3,
+              0.88
+            )
+          )
+          .setAlpha(
+            Phaser.Math.FloatBetween(
+              0.6,
+              1
+            )
+          )
+          .setTint(
+            Phaser.Utils.Array.GetRandom(
+              [
+                0xffffff,
+                0xd5b8ff,
+                0xa971ff,
+                0x77f6ff
+              ]
+            )
+          );
+
+        this.tweens.add({
+          targets: particle,
+
+          x:
+            x +
+            Math.cos(angle) *
+              distance,
+
+          y:
+            y +
+            Math.sin(angle) *
+              distance,
+
+          alpha: 0,
+
+          scale: 0,
+
+          duration:
+            Phaser.Math.Between(
+              230,
+              520
+            ),
+
+          ease: "Quad.Out",
+
+          onComplete: () => {
+            particle.destroy();
+          }
+        });
+      }
+    }
+
+    createBallTrail() {
+      if (
+        !this.ball?.active ||
+        !this.state.ballLaunched
+      ) {
+        return;
+      }
+
+      const now =
+        this.time.now;
+
+      const interval =
+        Number(
+          CONFIG.effects?.trail
+            ?.intervalMs
+        ) || 34;
+
+      if (
+        now - this.lastTrailAt <
+        interval
+      ) {
+        return;
+      }
+
+      const velocity =
+        this.ball.body?.velocity;
+
+      const speed =
+        velocity
+          ? Math.hypot(
+              velocity.x,
+              velocity.y
+            )
+          : 0;
+
+      const minimumSpeed =
+        Number(
+          CONFIG.effects?.trail
+            ?.minimumSpeed
+        ) || 4;
+
+      if (speed < minimumSpeed) {
+        return;
+      }
+
+      this.lastTrailAt = now;
+
+      const trail = this.add
+        .image(
+          this.ball.x,
+          this.ball.y,
+          "pumpball-trail"
+        )
+        .setDepth(
+          DEPTH.trail
+        )
+        .setAlpha(
+          Phaser.Math.Clamp(
+            speed / 30,
+            0.18,
+            0.66
+          )
+        )
+        .setScale(
+          Phaser.Math.Clamp(
+            speed / 28,
+            0.3,
+            0.72
+          )
+        );
+
+      this.trailSprites.push(
+        trail
+      );
+
+      this.tweens.add({
+        targets: trail,
+
+        alpha: 0,
+
+        scale: 0.08,
+
+        duration:
+          Number(
+            CONFIG.effects?.trail
+              ?.lifetimeMs
+          ) || 280,
+
+        ease: "Quad.Out",
+
+        onComplete: () => {
+          const index =
+            this.trailSprites.indexOf(
+              trail
+            );
+
+          if (index >= 0) {
+            this.trailSprites.splice(
+              index,
+              1
+            );
+          }
+
+          trail.destroy();
+        }
+      });
+    }
+
+    clearBallTrail() {
+      this.trailSprites.forEach(
+        (trail) => {
+          if (trail?.active) {
+            trail.destroy();
+          }
+        }
+      );
+
+      this.trailSprites.length = 0;
+    }
+
+    flashScreen(
+      color = 0xffffff,
+      alpha = 0.12,
+      duration = 80
+    ) {
+      if (!this.screenFlash) {
+        return;
+      }
+
+      this.tweens.killTweensOf(
+        this.screenFlash
+      );
+
+      this.screenFlash
+        .setFillStyle(
+          color,
+          alpha
+        )
+        .setAlpha(1);
+
+      this.tweens.add({
+        targets:
+          this.screenFlash,
+
+        alpha: 0,
+
+        duration,
+
+        ease: "Quad.Out"
+      });
+    }
+
+    shakeCamera(
+      intensity = 0.003,
+      duration = 70
+    ) {
+      if (
+        !CONFIG.effects?.cameraShake
+          ?.enabled
+      ) {
+        return;
+      }
+
+      this.cameras.main.shake(
+        duration,
+        intensity
+      );
+    }
+
+    beginLauncherCharge() {
+      if (
+        !this.state.playing ||
+        !this.state.ballInPlay ||
+        this.state.ballLaunched ||
+        this.state.launcherCharging
+      ) {
+        return;
+      }
+
+      this.state.launcherCharging =
+        true;
+
+      this.state.launcherChargeStartedAt =
+        this.time.now;
+
+      this.state.launcherCharge = 0;
+
+      this.tweens.killTweensOf(
+        this.launcherSpring
+      );
+
+      this.tweens.killTweensOf(
+        this.launcherCap
+      );
+    }
+
+    updateLauncherCharge() {
+      if (
+        !this.state.launcherCharging
+      ) {
+        return;
+      }
+
+      const maximumChargeMs =
+        Number(
+          CONFIG.plunger
+            ?.maximumChargeMs
+        ) || 1250;
+
+      const elapsed =
+        this.time.now -
+        this.state
+          .launcherChargeStartedAt;
+
+      const charge =
+        Phaser.Math.Clamp(
+          elapsed /
+            maximumChargeMs,
+          0,
+          1
+        );
+
+      this.state.launcherCharge =
+        charge;
+
+      const springCompression =
+        Phaser.Math.Linear(
+          1,
+          0.42,
+          charge
+        );
+
+      const capOffset =
+        Phaser.Math.Linear(
+          0,
+          42,
+          charge
+        );
+
+      this.launcherSpring
+        ?.setScale(
+          1,
+          springCompression
+        );
+
+      if (this.launcherCap) {
+        this.launcherCap.y =
+          1144 + capOffset;
+      }
+
+      if (this.launcherMeter) {
+        this.launcherMeter.height =
+          Phaser.Math.Linear(
+            0,
+            160,
+            charge
+          );
+      }
+    }
+
+    releaseLauncher() {
+      if (
+        !this.state
+          .launcherCharging
+      ) {
+        return;
+      }
+
+      this.state.launcherCharging =
+        false;
+
+      if (
+        !this.state.playing ||
+        !this.state.ballInPlay ||
+        this.state.ballLaunched ||
+        !this.ball?.body
+      ) {
+        this.resetLauncherVisuals();
+
+        return;
+      }
+
+      const minimumCharge =
+        Number(
+          CONFIG.plunger
+            ?.minimumCharge
+        ) || 0.1;
+
+      const charge =
+        Math.max(
+          minimumCharge,
+          this.state
+            .launcherCharge
+        );
+
+      const minimumImpulse =
+        Number(
+          CONFIG.plunger
+            ?.minimumImpulse
+        ) || 0.018;
+
+      const maximumImpulse =
+        Number(
+          CONFIG.plunger
+            ?.maximumImpulse
+        ) || 0.046;
+
+      let launchImpulse =
+        Phaser.Math.Linear(
+          minimumImpulse,
+          maximumImpulse,
+          charge
+        );
+
+      if (
+        typeof UTILS
+          .calculatePlungerImpulse ===
+        "function"
+      ) {
+        const calculated =
+          Number(
+            UTILS.calculatePlungerImpulse(
+              charge,
+              CONFIG.plunger
+            )
+          );
+
+        if (
+          Number.isFinite(
+            calculated
+          ) &&
+          calculated > 0
+        ) {
+          launchImpulse =
+            calculated;
+        }
+      }
+
+      this.state.ballLaunched =
+        true;
+
+      this.state.launchGraceUntil =
+        this.time.now +
+        (Number(
+          CONFIG.plunger
+            ?.launchGraceMs
+        ) || 900);
+
+      this.ball.setStatic(false);
+
+      this.ball.setIgnoreGravity(
+        false
+      );
+
+      this.ball.setVelocity(
+        Phaser.Math.FloatBetween(
+          -0.35,
+          0.35
+        ),
+        0
+      );
+
+      this.ball.applyForce({
+        x:
+          Phaser.Math.FloatBetween(
+            -0.00008,
+            0.00008
+          ),
+
+        y: -launchImpulse
+      });
+
+      this.state.lastBallMotionAt =
+        this.time.now;
+
+      this.resetLauncherVisuals(
+        true
+      );
+
+      this.flashScreen(
+        0xb27aff,
+        0.1,
+        70
+      );
+
+      this.shakeCamera(
+        0.0022,
+        65
+      );
+
+      vibrate(14);
+
+      emit(
+        "pumpball:ball-launched",
+        {
+          sessionId:
+            this.state.sessionId,
+
+          ballNumber:
+            this.state.ballNumber,
+
+          charge
+        }
+      );
+    }
+
+    resetLauncherVisuals(
+      animate = false
+    ) {
+      this.state.launcherCharge = 0;
+
+      if (this.launcherMeter) {
+        this.launcherMeter.height = 0;
+      }
+
+      if (!animate) {
+        this.launcherSpring
+          ?.setScale(1, 1);
+
+        if (this.launcherCap) {
+          this.launcherCap.y = 1144;
+        }
+
+        return;
+      }
+
+      if (this.launcherSpring) {
+        this.tweens.add({
+          targets:
+            this.launcherSpring,
+
+          scaleY: 1.16,
+
+          duration: 75,
+
+          yoyo: true,
+
+          ease: "Quad.Out",
+
+          onComplete: () => {
+            this.launcherSpring
+              ?.setScale(1, 1);
+          }
+        });
+      }
+
+      if (this.launcherCap) {
+        this.tweens.add({
+          targets:
+            this.launcherCap,
+
+          y: 1128,
+
+          duration: 65,
+
+          yoyo: true,
+
+          ease: "Quad.Out",
+
+          onComplete: () => {
+            if (
+              this.launcherCap
+            ) {
+              this.launcherCap.y =
+                1144;
+            }
+          }
+        });
+      }
+    }
+
+    nudge(direction) {
+      if (
+        !this.state.playing ||
+        !this.state.ballLaunched ||
+        !this.ball?.body
+      ) {
+        return;
+      }
+
+      const now =
+        this.time.now;
+
+      const cooldown =
+        Number(
+          CONFIG.nudging
+            ?.cooldownMs
+        ) || 650;
+
+      if (
+        now - this.lastNudgeAt <
+        cooldown
+      ) {
+        return;
+      }
+
+      this.lastNudgeAt = now;
+
+      const force =
+        Number(
+          CONFIG.nudging?.force
+        ) || 0.00072;
+
+      this.ball.applyForce({
+        x:
+          Math.sign(direction) *
+          force,
+
+        y: -force * 0.18
+      });
+
+      this.cameras.main.shake(
+        55,
+        0.0024
+      );
+
+      this.limitBallVelocity();
+
+      vibrate(10);
+    }
+
+        startAttempt({
+      sessionId,
+      credit
+    }) {
+      if (
+        !this.state.ready ||
+        this.state.playing
+      ) {
+        return false;
+      }
+
+      this.resetAttemptState();
+
+      this.state.sessionId =
+        sessionId ||
+        createSessionId();
+
+      this.state.credit =
+        credit || null;
+
+      this.state.playing = true;
+      this.state.paused = false;
+      this.state.gameOver = false;
+
+      this.state.score = 0;
+
+      this.state.ballNumber = 0;
+
+      this.state.ballsRemaining =
+        Number(
+          CONFIG.game?.ballsPerGame
+        ) || 3;
+
+      this.updateHud();
+
+      this.time.delayedCall(
+        Number(
+          CONFIG.game
+            ?.attemptStartDelayMs
+        ) || 240,
+        () => {
+          if (
+            !this.state.playing ||
+            this.state.gameOver
+          ) {
+            return;
+          }
+
+          this.serveNextBall();
+        }
+      );
+
+      emit(
+        "pumpball:attempt-started",
+        {
+          sessionId:
+            this.state.sessionId,
+
+          creditId:
+            this.state.credit?.id ||
+            this.state.credit
+              ?.creditId ||
+            null
+        }
+      );
+
+      return true;
+    }
+
+    resetAttemptState() {
+      this.removeBall();
+
+      this.clearBallTrail();
+
+      this.state.playing = false;
+      this.state.paused = false;
+      this.state.gameOver = false;
+
+      this.state.score = 0;
+
+      this.state.ballNumber = 0;
+
+      this.state.ballsRemaining =
+        Number(
+          CONFIG.game?.ballsPerGame
+        ) || 3;
+
+      this.state.sessionId = null;
+      this.state.credit = null;
+
+      this.state.ballInPlay = false;
+      this.state.ballLaunched = false;
+
+      this.state.launcherCharging =
+        false;
+
+      this.state.launcherChargeStartedAt =
+        0;
+
+      this.state.launcherCharge = 0;
+
+      this.state.launchGraceUntil = 0;
+      this.state.drainLocked = false;
+
+      this.state.leftFlipperPressed =
+        false;
+
+      this.state.rightFlipperPressed =
+        false;
+
+      this.state.lastBallMotionAt = 0;
+      this.state.lastBallPosition = null;
+
+      this.state.ballSaveUsed = false;
+
+      this.pointerControls.leftPointerId =
+        null;
+
+      this.pointerControls.rightPointerId =
+        null;
+
+      this.pointerControls.launcherPointerId =
+        null;
+
+      this.lastTrailAt = 0;
+      this.lastNudgeAt = 0;
+
+      this.resetLauncherVisuals();
+      this.resetFlippersImmediately();
+      this.updateHud();
+    }
+
+    serveNextBall() {
+      if (
+        !this.state.playing ||
+        this.state.gameOver ||
+        this.state.ballInPlay
+      ) {
+        return;
+      }
+
+      if (
+        this.state.ballsRemaining <= 0
+      ) {
+        this.finishAttempt();
+
+        return;
+      }
+
+      this.removeBall();
+
+      this.state.ballNumber += 1;
+      this.state.ballsRemaining -= 1;
+
+      this.state.ballInPlay = true;
+      this.state.ballLaunched = false;
+
+      this.state.launcherCharging =
+        false;
+
+      this.state.launcherCharge = 0;
+
+      this.state.launchGraceUntil = 0;
+      this.state.drainLocked = false;
+
+      this.state.ballSaveUsed = false;
+
+      this.createBall();
+
+      this.updateHud();
+
+      emit(
+        "pumpball:ball-served",
+        {
+          sessionId:
+            this.state.sessionId,
+
+          ballNumber:
+            this.state.ballNumber,
+
+          ballsRemaining:
+            this.state.ballsRemaining
+        }
+      );
+    }
+
+    createBall() {
+      const ballSettings =
+        CONFIG.physics?.ball || {};
+
+      const plungerSettings =
+        CONFIG.plunger || {};
+
+      const startX =
+        Number(
+          plungerSettings.laneX
+        ) || 662;
+
+      const startY =
+        Number(
+          plungerSettings.ballStartY
+        ) || 1122;
+
+      const radius =
+        Number(
+          ballSettings.radius
+        ) || 15;
+
+      this.ballShadow = this.add
+        .ellipse(
+          startX + 5,
+          startY + 8,
+          radius * 2.1,
+          radius * 1.15,
+          0x000000,
+          0.34
+        )
+        .setDepth(
+          DEPTH.ball - 1
+        );
+
+      this.ball = this.matter.add
+        .image(
+          startX,
+          startY,
+          "ball",
+          null,
+          {
+            shape: {
+              type: "circle",
+              radius
+            },
+
+            density:
+              Number(
+                ballSettings.density
+              ) || 0.0048,
+
+            friction:
+              Number(
+                ballSettings.friction
+              ) || 0.004,
+
+            frictionAir:
+              Number(
+                ballSettings.frictionAir
+              ) || 0.0014,
+
+            frictionStatic:
+              Number(
+                ballSettings
+                  .frictionStatic
+              ) || 0,
+
+            restitution:
+              Number(
+                ballSettings.restitution
+              ) || 0.46,
+
+            slop:
+              Number(
+                ballSettings.slop
+              ) || 0.02,
+
+            label: LABELS.ball,
+
+            ignoreGravity: true,
+
+            isStatic: true
+          }
+        )
+        .setDisplaySize(
+          radius * 2,
+          radius * 2
+        )
+        .setDepth(
+          DEPTH.ball
+        );
+
+      this.ball.body.label =
+        LABELS.ball;
+
+      this.ball.setFixedRotation();
+
+      this.ball.setVelocity(
+        0,
+        0
+      );
+
+      this.ball.setAngularVelocity(
+        0
+      );
+
+      this.state.lastBallPosition = {
+        x: startX,
+        y: startY
+      };
+
+      this.state.lastBallMotionAt =
+        this.time.now;
+
+      this.resetLauncherVisuals();
+
+      this.flashScreen(
+        0xffffff,
+        0.055,
+        70
+      );
+    }
+
+    removeBall() {
+      if (this.ball?.active) {
+        this.ball.destroy();
+      }
+
+      if (
+        this.ballShadow?.active
+      ) {
+        this.ballShadow.destroy();
+      }
+
+      this.ball = null;
+      this.ballShadow = null;
+
+      this.state.ballInPlay = false;
+      this.state.ballLaunched = false;
+
+      this.state.launcherCharging =
+        false;
+
+      this.state.launcherCharge = 0;
+
+      this.clearBallTrail();
+      this.resetLauncherVisuals();
+    }
+
+    handleDrain() {
+      if (
+        !this.state.playing ||
+        !this.state.ballInPlay ||
+        this.state.drainLocked
+      ) {
+        return;
+      }
+
+      if (
+        this.time.now <
+        this.state.launchGraceUntil
+      ) {
+        return;
+      }
+
+      this.state.drainLocked = true;
+
+      const drainedBallNumber =
+        this.state.ballNumber;
+
+      const ballSaveEnabled =
+        Boolean(
+          CONFIG.gameModes
+            ?.ballSave?.enabled
+        );
+
+      const ballSaveWindow =
+        Number(
+          CONFIG.gameModes
+            ?.ballSave?.durationMs
+        ) || 0;
+
+      const launchedRecently =
+        this.state.ballLaunched &&
+        this.time.now -
+          this.state
+            .launchGraceUntil <
+          ballSaveWindow;
+
+      const shouldSaveBall =
+        ballSaveEnabled &&
+        !this.state.ballSaveUsed &&
+        launchedRecently;
+
+      if (shouldSaveBall) {
+        this.state.ballSaveUsed = true;
+
+        this.showFloatingScore(
+          0,
+          WORLD.width / 2,
+          WORLD.height - 180,
+          "BALL SAVE"
+        );
+
+        this.flashScreen(
+          0x71e6ff,
+          0.2,
+          140
+        );
+
+        this.shakeCamera(
+          0.004,
+          110
+        );
+
+        this.time.delayedCall(
+          320,
+          () => {
+            if (
+              !this.state.playing ||
+              this.state.gameOver
+            ) {
+              return;
+            }
+
+            this.removeBall();
+
+            this.state.ballNumber =
+              Math.max(
+                0,
+                this.state.ballNumber -
+                  1
+              );
+
+            this.state.ballsRemaining +=
+              1;
+
+            this.state.drainLocked =
+              false;
+
+            this.serveNextBall();
+          }
+        );
+
+        return;
+      }
+
+      this.flashScreen(
+        0xff4f73,
+        0.13,
+        110
+      );
+
+      this.shakeCamera(
+        0.004,
+        115
+      );
+
+      vibrate(
+        [18, 22, 18]
+      );
+
+      emit(
+        "pumpball:ball-drained",
+        {
+          sessionId:
+            this.state.sessionId,
+
+          ballNumber:
+            drainedBallNumber,
+
+          score:
+            this.state.score,
+
+          ballsRemaining:
+            this.state.ballsRemaining
+        }
+      );
+
+      this.time.delayedCall(
+        Number(
+          CONFIG.game
+            ?.ballDrainDelayMs
+        ) || 760,
+        () => {
+          if (
+            !this.state.playing ||
+            this.state.gameOver
+          ) {
+            return;
+          }
+
+          this.removeBall();
+
+          this.state.drainLocked =
+            false;
+
+          if (
+            this.state.ballsRemaining >
+            0
+          ) {
+            this.serveNextBall();
+          } else {
+            this.finishAttempt();
+          }
+        }
+      );
+    }
+
+    async finishAttempt() {
+      if (
+        this.state.gameOver ||
+        !this.state.playing
+      ) {
+        return;
+      }
+
+      this.state.gameOver = true;
+      this.state.playing = false;
+
+      this.state.launcherCharging =
+        false;
+
+      this.state.leftFlipperPressed =
+        false;
+
+      this.state.rightFlipperPressed =
+        false;
+
+      this.removeBall();
+      this.resetFlippersImmediately();
+
+      const finalScore =
+        Math.max(
+          0,
+          Math.floor(
+            this.state.score
+          )
+        );
+
+      emit(
+        "pumpball:attempt-ended",
+        {
+          sessionId:
+            this.state.sessionId,
+
+          score: finalScore,
+
+          ballCount:
+            this.state.ballNumber
+        }
+      );
+
+      try {
+        await finalizeAttempt({
+          score: finalScore,
+
+          sessionId:
+            this.state.sessionId,
+
+          credit:
+            this.state.credit
+        });
+      } catch (error) {
+        console.error(
+          "[PumpBall] Attempt finalization failed.",
+          error
+        );
+
+        showGameOverPanel({
+          score: finalScore,
+          rank: null,
+          improved: false,
+          previousBest:
+            getPersonalBest()
+        });
+
+        if (dom.rankFeedback) {
+          dom.rankFeedback.textContent =
+            "Your game ended, but the score could not be recorded. Please refresh before purchasing another attempt.";
+        }
+      }
+    }
+
+    updateHud() {
+      if (dom.scoreDisplay) {
+        dom.scoreDisplay.textContent =
+          formatScore(
+            this.state.score
+          );
+      }
+
+      if (dom.ballDisplay) {
+        const totalBalls =
+          Number(
+            CONFIG.game
+              ?.ballsPerGame
+          ) || 3;
+
+        const visibleBall =
+          this.state.playing
+            ? Phaser.Math.Clamp(
+                this.state
+                  .ballNumber,
+                0,
+                totalBalls
+              )
+            : 0;
+
+        dom.ballDisplay.textContent =
+          `${visibleBall} / ${totalBalls}`;
+      }
+    }
+
+    update(
+      time,
+      delta
+    ) {
+      if (!this.state.ready) {
+        return;
+      }
+
+      this.updateInputState();
+      this.updateFlippers(delta);
+      this.updateLauncherCharge();
+
+      if (
+        !this.state.playing ||
+        this.state.paused ||
+        this.state.gameOver
+      ) {
+        return;
+      }
+
+      if (!this.ball?.body) {
+        return;
+      }
+
+      this.updateBallShadow();
+
+      if (
+        !this.state.ballLaunched
+      ) {
+        this.lockBallToLauncher();
+
+        return;
+      }
+
+      this.createBallTrail();
+      this.limitBallVelocity();
+      this.trackBallMotion();
+      this.handleOutOfBoundsBall();
+      this.handleStuckBall();
+    }
+
+    updateInputState() {
+      const leftPressed =
+        Boolean(
+          this.keys.left?.isDown ||
+          this.keys.leftAlt?.isDown ||
+          this.pointerControls
+            .leftPointerId !== null
+        );
+
+      const rightPressed =
+        Boolean(
+          this.keys.right?.isDown ||
+          this.keys.rightAlt?.isDown ||
+          this.pointerControls
+            .rightPointerId !== null
+        );
+
+      const launcherPressed =
+        Boolean(
+          this.keys.launch?.isDown ||
+          this.keys.launchAlt
+            ?.isDown ||
+          this.pointerControls
+            .launcherPointerId !==
+            null
+        );
+
+      this.state.leftFlipperPressed =
+        leftPressed;
+
+      this.state.rightFlipperPressed =
+        rightPressed;
+
+      if (
+        launcherPressed &&
+        !this.state
+          .launcherCharging &&
+        !this.state.ballLaunched
+      ) {
+        this.beginLauncherCharge();
+      }
+
+      if (
+        !launcherPressed &&
+        this.state
+          .launcherCharging
+      ) {
+        this.releaseLauncher();
+      }
+    }
+
+    updateFlippers(delta) {
+      if (
+        !this.leftFlipper ||
+        !this.rightFlipper
+      ) {
+        return;
+      }
+
+      const settings =
+        CONFIG.flippers || {};
+
+      const leftSettings =
+        settings.left || {};
+
+      const rightSettings =
+        settings.right || {};
+
+      const leftRest =
+        Number(
+          leftSettings
+            .restAngleDegrees
+        ) || 24;
+
+      const leftActive =
+        Number(
+          leftSettings
+            .activeAngleDegrees
+        ) || -28;
+
+      const rightRest =
+        Number(
+          rightSettings
+            .restAngleDegrees
+        ) || -24;
+
+      const rightActive =
+        Number(
+          rightSettings
+            .activeAngleDegrees
+        ) || 28;
+
+      const riseSpeed =
+        Number(
+          settings.riseSpeed
+        ) || 0.032;
+
+      const returnSpeed =
+        Number(
+          settings.returnSpeed
+        ) || 0.022;
+
+      const leftTarget =
+        this.state
+          .leftFlipperPressed
+          ? leftActive
+          : leftRest;
+
+      const rightTarget =
+        this.state
+          .rightFlipperPressed
+          ? rightActive
+          : rightRest;
+
+      const leftSpeed =
+        this.state
+          .leftFlipperPressed
+          ? riseSpeed
+          : returnSpeed;
+
+      const rightSpeed =
+        this.state
+          .rightFlipperPressed
+          ? riseSpeed
+          : returnSpeed;
+
+      const leftAngle =
+        Phaser.Math.Angle.RotateTo(
+          Phaser.Math.DegToRad(
+            this.leftFlipper.angle
+          ),
+
+          Phaser.Math.DegToRad(
+            leftTarget
+          ),
+
+          leftSpeed *
+            Math.max(
+              0.5,
+              delta / 16.67
+            )
+        );
+
+      const rightAngle =
+        Phaser.Math.Angle.RotateTo(
+          Phaser.Math.DegToRad(
+            this.rightFlipper.angle
+          ),
+
+          Phaser.Math.DegToRad(
+            rightTarget
+          ),
+
+          rightSpeed *
+            Math.max(
+              0.5,
+              delta / 16.67
+            )
+        );
+
+      this.leftFlipper.setRotation(
+        leftAngle
+      );
+
+      this.rightFlipper.setRotation(
+        rightAngle
+      );
+
+      if (
+        this.leftFlipperBody
+      ) {
+        Phaser.Physics.Matter.Matter.Body.setAngle(
+          this.leftFlipperBody,
+          leftAngle
+        );
+
+        Phaser.Physics.Matter.Matter.Body.setAngularVelocity(
+          this.leftFlipperBody,
+          0
+        );
+      }
+
+      if (
+        this.rightFlipperBody
+      ) {
+        Phaser.Physics.Matter.Matter.Body.setAngle(
+          this.rightFlipperBody,
+          rightAngle
+        );
+
+        Phaser.Physics.Matter.Matter.Body.setAngularVelocity(
+          this.rightFlipperBody,
+          0
+        );
+      }
+    }
+
+    resetFlippersImmediately() {
+      if (
+        !this.leftFlipper ||
+        !this.rightFlipper
+      ) {
+        return;
+      }
+
+      const leftRest =
+        Number(
+          CONFIG.flippers?.left
+            ?.restAngleDegrees
+        ) || 24;
+
+      const rightRest =
+        Number(
+          CONFIG.flippers?.right
+            ?.restAngleDegrees
+        ) || -24;
+
+      const leftAngle =
+        Phaser.Math.DegToRad(
+          leftRest
+        );
+
+      const rightAngle =
+        Phaser.Math.DegToRad(
+          rightRest
+        );
+
+      this.leftFlipper.setRotation(
+        leftAngle
+      );
+
+      this.rightFlipper.setRotation(
+        rightAngle
+      );
+
+      if (
+        this.leftFlipperBody
+      ) {
+        Phaser.Physics.Matter.Matter.Body.setAngle(
+          this.leftFlipperBody,
+          leftAngle
+        );
+      }
+
+      if (
+        this.rightFlipperBody
+      ) {
+        Phaser.Physics.Matter.Matter.Body.setAngle(
+          this.rightFlipperBody,
+          rightAngle
+        );
+      }
+    }
+
+    lockBallToLauncher() {
+      if (!this.ball?.body) {
+        return;
+      }
+
+      const laneX =
+        Number(
+          CONFIG.plunger?.laneX
+        ) || 662;
+
+      const ballStartY =
+        Number(
+          CONFIG.plunger
+            ?.ballStartY
+        ) || 1122;
+
+      const chargeOffset =
+        Phaser.Math.Linear(
+          0,
+          38,
+          this.state
+            .launcherCharge
+        );
+
+      const targetY =
+        ballStartY +
+        chargeOffset;
+
+      this.ball.setPosition(
+        laneX,
+        targetY
+      );
+
+      this.ball.setVelocity(
+        0,
+        0
+      );
+
+      this.ball.setAngularVelocity(
+        0
+      );
+    }
+
+    updateBallShadow() {
+      if (
+        !this.ball ||
+        !this.ballShadow
+      ) {
+        return;
+      }
+
+      this.ballShadow.setPosition(
+        this.ball.x + 5,
+        this.ball.y + 8
+      );
+
+      const velocity =
+        this.ball.body?.velocity;
+
+      const speed =
+        velocity
+          ? Math.hypot(
+              velocity.x,
+              velocity.y
+            )
+          : 0;
+
+      this.ballShadow.setAlpha(
+        Phaser.Math.Clamp(
+          0.35 - speed * 0.006,
+          0.12,
+          0.34
+        )
+      );
+    }
+
+    limitBallVelocity() {
+      if (!this.ball?.body) {
+        return;
+      }
+
+      const velocity =
+        this.ball.body.velocity;
+
+      const speed =
+        Math.hypot(
+          velocity.x,
+          velocity.y
+        );
+
+      const maximumSpeed =
+        Number(
+          CONFIG.physics?.ball
+            ?.maximumSpeed
+        ) || 34;
+
+      if (
+        speed <= maximumSpeed ||
+        speed <= 0
+      ) {
+        return;
+      }
+
+      const scale =
+        maximumSpeed / speed;
+
+      this.ball.setVelocity(
+        velocity.x * scale,
+        velocity.y * scale
+      );
+    }
+
+    trackBallMotion() {
+      if (!this.ball?.body) {
+        return;
+      }
+
+      const currentPosition = {
+        x: this.ball.x,
+        y: this.ball.y
+      };
+
+      const previous =
+        this.state
+          .lastBallPosition;
+
+      if (!previous) {
+        this.state.lastBallPosition =
+          currentPosition;
+
+        this.state.lastBallMotionAt =
+          this.time.now;
+
+        return;
+      }
+
+      const distance =
+        Phaser.Math.Distance.Between(
+          previous.x,
+          previous.y,
+          currentPosition.x,
+          currentPosition.y
+        );
+
+      const minimumMovement =
+        Number(
+          CONFIG.validation
+            ?.minimumMotionDistance
+        ) || 2.4;
+
+      if (
+        distance >=
+        minimumMovement
+      ) {
+        this.state.lastBallPosition =
+          currentPosition;
+
+        this.state.lastBallMotionAt =
+          this.time.now;
+      }
+    }
+
+    handleOutOfBoundsBall() {
+      if (
+        !this.ball ||
+        this.state.drainLocked
+      ) {
+        return;
+      }
+
+      const margin =
+        Number(
+          CONFIG.validation
+            ?.outOfBoundsMargin
+        ) || 120;
+
+      const outOfBounds =
+        this.ball.x < -margin ||
+        this.ball.x >
+          WORLD.width + margin ||
+        this.ball.y < -margin ||
+        this.ball.y >
+          WORLD.height + margin;
+
+      if (!outOfBounds) {
+        return;
+      }
+
+      this.handleDrain();
+    }
+
+    handleStuckBall() {
+      if (
+        !this.ball?.body ||
+        !this.state.ballLaunched ||
+        this.state.drainLocked
+      ) {
+        return;
+      }
+
+      const timeout =
+        Number(
+          CONFIG.validation
+            ?.stuckBallTimeoutMs
+        ) || 9000;
+
+      if (
+        this.time.now -
+          this.state
+            .lastBallMotionAt <
+        timeout
+      ) {
+        return;
+      }
+
+      const velocity =
+        this.ball.body.velocity;
+
+      const speed =
+        Math.hypot(
+          velocity.x,
+          velocity.y
+        );
+
+      const maximumStuckSpeed =
+        Number(
+          CONFIG.validation
+            ?.stuckBallMaximumSpeed
+        ) || 0.85;
+
+      if (
+        speed >
+        maximumStuckSpeed
+      ) {
+        this.state.lastBallMotionAt =
+          this.time.now;
+
+        return;
+      }
+
+      const rescueForce =
+        Number(
+          CONFIG.validation
+            ?.stuckBallRescueForce
+        ) || 0.00125;
+
+      this.ball.applyForce({
+        x:
+          Phaser.Math.FloatBetween(
+            -rescueForce,
+            rescueForce
+          ),
+
+        y:
+          -Math.abs(
+            rescueForce * 1.8
+          )
+      });
+
+      this.state.lastBallMotionAt =
+        this.time.now;
+
+      this.showFloatingScore(
+        0,
+        this.ball.x,
+        this.ball.y - 24,
+        "BALL RESCUE"
+      );
+
+      this.flashScreen(
+        0x76dfff,
+        0.08,
+        80
+      );
+
+      this.limitBallVelocity();
+    }
+
+      }
+
+  async function finalizeAttempt({
+    score,
+    sessionId,
+    credit
+  }) {
+    const previousBest =
+      getPersonalBest();
+
+    let submissionResult = null;
+
+    if (
+      Leaderboard &&
+      typeof Leaderboard.submitScore ===
+        "function"
+    ) {
+      submissionResult =
+        await Leaderboard.submitScore({
+          score,
+          sessionId,
+          playerId:
+            credit?.playerId ||
+            credit?.walletAddress ||
+            Payments?.getState?.()
+              ?.walletAddress ||
+            null,
+          verified: true
+        });
+    }
+
+    if (
+      Leaderboard &&
+      typeof Leaderboard.refresh ===
+        "function"
+    ) {
+      await Leaderboard.refresh();
+    }
+
+    const updatedSummary =
+      Leaderboard?.getPlayerSummary?.() ||
+      {};
+
+    const updatedBest =
+      Math.max(
+        Number(
+          updatedSummary.bestScore
+        ) || 0,
+        Number(
+          submissionResult?.bestScore
+        ) || 0,
+        score
+      );
+
+    const rank =
+      Number(
+        submissionResult?.rank
+      ) ||
+      Number(
+        updatedSummary.rank
+      ) ||
+      null;
+
+    const improved =
+      Boolean(
+        submissionResult?.improved
+      ) ||
+      updatedBest >
+        previousBest;
+
+    updatePersonalBestUi();
+
+    showGameOverPanel({
+      score,
+      rank,
+      improved,
+      previousBest
+    });
+
+    runtime.currentCredit = null;
+
+    emit(
+      "pumpball:score-submitted",
+      {
+        score,
+        sessionId,
+        rank,
+        improved,
+        bestScore:
+          updatedBest
+      }
+    );
+  }
+
+  function getAvailableCredit() {
+    if (
+      !Payments ||
+      typeof Payments
+        .getAvailablePlayCredits !==
+        "function"
+    ) {
+      return null;
+    }
+
+    const credits =
+      Payments.getAvailablePlayCredits();
+
+    if (
+      !Array.isArray(credits) ||
+      credits.length === 0
+    ) {
+      return null;
+    }
+
+    return credits[0] || null;
+  }
+
+  async function consumeCreditForSession(
+    credit,
+    sessionId
+  ) {
+    if (!credit) {
+      throw new Error(
+        "No valid play credit was found."
+      );
+    }
+
+    if (
+      !Payments ||
+      typeof Payments
+        .consumePlayCredit !==
+        "function"
+    ) {
+      return credit;
+    }
+
+    const creditId =
+      credit.id ||
+      credit.creditId ||
+      credit.playCreditId ||
+      null;
+
+    const consumed =
+      await Payments.consumePlayCredit(
+        creditId,
+        sessionId
+      );
+
+    return consumed || credit;
+  }
+
+  async function startAttemptWithCredit(
+    credit
+  ) {
+    if (
+      runtime.startingAttempt
+    ) {
+      return;
+    }
+
+    if (
+      !runtime.scene ||
+      !runtime.scene.state.ready
+    ) {
+      setFeedback(
+        "The game is still loading. Please try again in a moment.",
+        "error"
+      );
+
+      return;
+    }
+
+    if (
+      runtime.scene.state.playing
+    ) {
+      return;
+    }
+
+    runtime.startingAttempt = true;
+
+    setButtonsBusy(true);
+
+    try {
+      const sessionId =
+        createSessionId();
+
+      const consumedCredit =
+        await consumeCreditForSession(
+          credit,
+          sessionId
+        );
+
+      runtime.currentSessionId =
+        sessionId;
+
+      runtime.currentCredit =
+        consumedCredit;
+
+      setFeedback("");
+
+      const started =
+        runtime.scene.startAttempt({
+          sessionId,
+          credit:
+            consumedCredit
+        });
+
+      if (!started) {
+        throw new Error(
+          "The game could not begin."
+        );
+      }
+
+      hideOverlay();
+    } catch (error) {
+      runtime.latestError = error;
+
+      console.error(
+        "[PumpBall] Could not start attempt.",
+        error
+      );
+
+      setFeedback(
+        error?.message ||
+          "The attempt could not be started.",
+        "error"
+      );
+    } finally {
+      runtime.startingAttempt = false;
+
+      setButtonsBusy(false);
+    }
+  }
+
+  async function handlePaidPlay() {
+    if (
+      runtime.startingAttempt
+    ) {
+      return;
+    }
+
+    setFeedback("");
+
+    setButtonsBusy(true);
+
+    try {
+      let credit =
+        getAvailableCredit();
+
+      if (!credit) {
+        if (
+          !Payments ||
+          typeof Payments.purchasePlay !==
+            "function"
+        ) {
+          throw new Error(
+            "Payments are unavailable."
+          );
+        }
+
+        setFeedback(
+          "Preparing your tournament attempt…",
+          "neutral"
+        );
+
+        credit =
+          await Payments.purchasePlay({
+            tournamentId:
+              CONFIG.tournament.id,
+
+            amountLamports:
+              CONFIG.tournament
+                .entryPriceLamports,
+
+            amountSol:
+              CONFIG.tournament
+                .entryPriceSol
+          });
+      }
+
+      if (!credit) {
+        throw new Error(
+          "No play credit was issued."
+        );
+      }
+
+      setButtonsBusy(false);
+
+      await startAttemptWithCredit(
+        credit
+      );
+    } catch (error) {
+      runtime.latestError = error;
+
+      console.error(
+        "[PumpBall] Paid play failed.",
+        error
+      );
+
+      setFeedback(
+        error?.message ||
+          "The payment could not be completed.",
+        "error"
+      );
+
+      setButtonsBusy(false);
+    }
+  }
+
+  async function handleFreeTestPlay() {
+    if (
+      runtime.startingAttempt
+    ) {
+      return;
+    }
+
+    if (
+      !CONFIG.app
+        ?.allowFreeTestGame
+    ) {
+      setFeedback(
+        "Free test games are disabled.",
+        "error"
+      );
+
+      return;
+    }
+
+    setFeedback("");
+
+    setButtonsBusy(true);
+
+    try {
+      if (
+        !Payments ||
+        typeof Payments
+          .createTestPlayCredit !==
+          "function"
+      ) {
+        throw new Error(
+          "Test play credits are unavailable."
+        );
+      }
+
+      const credit =
+        await Payments.createTestPlayCredit({
+          tournamentId:
+            CONFIG.tournament.id,
+
+          metadata: {
+            source:
+              "free-test-button",
+
+            createdAt:
+              new Date().toISOString()
+          }
+        });
+
+      if (!credit) {
+        throw new Error(
+          "The test credit could not be created."
+        );
+      }
+
+      setButtonsBusy(false);
+
+      await startAttemptWithCredit(
+        credit
+      );
+    } catch (error) {
+      runtime.latestError = error;
+
+      console.error(
+        "[PumpBall] Test game failed.",
+        error
+      );
+
+      setFeedback(
+        error?.message ||
+          "The test game could not be started.",
+        "error"
+      );
+
+      setButtonsBusy(false);
+    }
+  }
+
+  async function handleWalletConnection() {
+    if (
+      !Payments ||
+      typeof Payments.connectWallet !==
+        "function"
+    ) {
+      setFeedback(
+        "Wallet connection is unavailable.",
+        "error"
+      );
+
+      return;
+    }
+
+    setButtonsBusy(true);
+
+    try {
+      const paymentState =
+        Payments.getState?.();
+
+      if (
+        paymentState?.walletConnected &&
+        typeof Payments.disconnectWallet ===
+          "function"
+      ) {
+        await Payments.disconnectWallet();
+      } else {
+        await Payments.connectWallet();
+      }
+
+      updateWalletUi();
+
+      if (
+        Leaderboard &&
+        typeof Leaderboard.refresh ===
+          "function"
+      ) {
+        await Leaderboard.refresh();
+      }
+
+      updatePersonalBestUi();
+    } catch (error) {
+      runtime.latestError = error;
+
+      console.error(
+        "[PumpBall] Wallet action failed.",
+        error
+      );
+
+      setFeedback(
+        error?.message ||
+          "The wallet action could not be completed.",
+        "error"
+      );
+    } finally {
+      setButtonsBusy(false);
+    }
+  }
+
+  function returnToLeaderboard() {
+    const section =
+      document.getElementById(
+        "leaderboard-section"
+      );
+
+    section?.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }
+
+  function prepareNextAttempt() {
+    if (
+      runtime.scene?.state.playing
+    ) {
+      return;
+    }
+
+    showStartPanel();
+
+    if (dom.finalScoreDisplay) {
+      dom.finalScoreDisplay.textContent =
+        "0";
+    }
+
+    if (dom.rankFeedback) {
+      dom.rankFeedback.textContent =
+        "Your verified rank will appear here.";
+    }
+
+    setFeedback("");
+  }
+
+  function getDialogElements() {
+    return {
+      dialog:
+        document.getElementById(
+          "information-dialog"
+        ),
+
+      title:
+        document.getElementById(
+          "dialog-title"
+        ),
+
+      body:
+        document.getElementById(
+          "dialog-body"
+        ),
+
+      closeButton:
+        document.getElementById(
+          "close-dialog-button"
+        )
+    };
+  }
+
+  function openInformationDialog(
+    title,
+    content
+  ) {
+    const elements =
+      getDialogElements();
+
+    if (
+      !elements.dialog ||
+      !elements.title ||
+      !elements.body
+    ) {
+      return;
+    }
+
+    elements.title.textContent =
+      title;
+
+    elements.body.innerHTML =
+      content;
+
+    if (
+      typeof elements.dialog
+        .showModal === "function"
+    ) {
+      elements.dialog.showModal();
+    } else {
+      elements.dialog.setAttribute(
+        "open",
+        ""
+      );
+    }
+  }
+
+  function closeInformationDialog() {
+    const { dialog } =
+      getDialogElements();
+
+    if (!dialog) {
+      return;
+    }
+
+    if (
+      typeof dialog.close ===
+        "function"
+    ) {
+      dialog.close();
+    } else {
+      dialog.removeAttribute(
+        "open"
+      );
+    }
+  }
+
+  function bindInformationDialogs() {
+    const rulesButton =
+      document.getElementById(
+        "open-rules-button"
+      );
+
+    const fairPlayButton =
+      document.getElementById(
+        "open-fair-play-button"
+      );
+
+    const supportButton =
+      document.getElementById(
+        "open-support-button"
+      );
+
+    const {
+      dialog,
+      closeButton
+    } = getDialogElements();
+
+    rulesButton?.addEventListener(
+      "click",
+      () => {
+        openInformationDialog(
+          "Official Rules",
+          `
+            <p>
+              Tournament #001 uses paid individual attempts.
+              Each attempt includes three balls.
+            </p>
+
+            <p>
+              Players may enter an unlimited number of times.
+              Only each player’s highest verified score appears
+              in the active-season standings.
+            </p>
+
+            <p>
+              The top two eligible players at the close of the
+              tournament each receive 0.5 SOL.
+            </p>
+
+            <p>
+              Tie breakers are applied in this order:
+              fewest attempts, earliest qualifying score, then
+              earliest completed session.
+            </p>
+          `
+        );
+      }
+    );
+
+    fairPlayButton?.addEventListener(
+      "click",
+      () => {
+        openInformationDialog(
+          "Fair Play",
+          `
+            <p>
+              Scores must come from a valid PumpBall session and
+              a verified play credit.
+            </p>
+
+            <p>
+              Automated play, altered client code, replayed payment
+              proofs, manipulated session data, or any other attempt
+              to falsify a score may result in removal.
+            </p>
+
+            <p>
+              Tournament records are isolated by season so prior
+              standings remain available for auditing.
+            </p>
+          `
+        );
+      }
+    );
+
+    supportButton?.addEventListener(
+      "click",
+      () => {
+        openInformationDialog(
+          "Support",
+          `
+            <p>
+              If a payment succeeds but your attempt does not begin,
+              do not immediately purchase another play.
+            </p>
+
+            <p>
+              Save your wallet address, transaction signature,
+              approximate payment time, and a screenshot of any
+              visible error.
+            </p>
+
+            <p>
+              Development test credits do not represent an on-chain
+              payment and have no cash value.
+            </p>
+          `
+        );
+      }
+    );
+
+    closeButton?.addEventListener(
+      "click",
+      closeInformationDialog
+    );
+
+    dialog?.addEventListener(
+      "click",
+      (event) => {
+        if (
+          event.target === dialog
+        ) {
+          closeInformationDialog();
+        }
+      }
+    );
+
+    dialog?.addEventListener(
+      "cancel",
+      (event) => {
+        event.preventDefault();
+
+        closeInformationDialog();
+      }
+    );
+  }
+
+  function bindUiEvents() {
     dom.purchasePlayButton
       ?.addEventListener(
         "click",
@@ -3582,321 +5523,627 @@
         handlePaidPlay
       );
 
-    dom.connectWalletButton
-      ?.addEventListener(
-        "click",
-        handleConnectWallet
-      );
-
     dom.returnToLeaderboardButton
       ?.addEventListener(
         "click",
-        handleViewLeaderboard
+        returnToLeaderboard
+      );
+
+    dom.connectWalletButton
+      ?.addEventListener(
+        "click",
+        handleWalletConnection
       );
 
     window.addEventListener(
-      "pumpball:wallet-connected",
-      updateWalletUi
+      "pumpball:wallet-changed",
+      () => {
+        updateWalletUi();
+        updatePersonalBestUi();
+      }
     );
 
     window.addEventListener(
-      "pumpball:wallet-disconnected",
-      updateWalletUi
+      "pumpball:leaderboard-updated",
+      () => {
+        updatePersonalBestUi();
+      }
     );
 
     document.addEventListener(
       "visibilitychange",
       () => {
-        if (!runtime.scene) {
+        const scene =
+          runtime.scene;
+
+        if (!scene) {
           return;
         }
 
-        if (
-          document.visibilityState ===
-          "hidden"
-        ) {
+        scene.state.paused =
+          document.hidden;
+
+        if (document.hidden) {
+          scene.state.leftFlipperPressed =
+            false;
+
+          scene.state.rightFlipperPressed =
+            false;
+
           if (
-            runtime.scene.gameState
-              .playing
+            scene.state
+              .launcherCharging
           ) {
-            runtime.scene
-              .matter.world.pause();
-
-            runtime.scene.gameState.paused =
-              true;
+            scene.releaseLauncher();
           }
-        } else if (
-          runtime.scene.gameState.paused
-        ) {
-          runtime.scene
-            .matter.world.resume();
-
-          runtime.scene.gameState.paused =
-            false;
         }
       }
     );
 
-    window.addEventListener(
-      "blur",
-      () => {
-        if (
-          runtime.scene?.gameState
-            .playing
-        ) {
-          runtime.scene
-            .matter.world.pause();
-
-          runtime.scene.gameState.paused =
-            true;
-        }
-      }
-    );
-
-    window.addEventListener(
-      "focus",
-      () => {
-        if (
-          runtime.scene?.gameState
-            .paused
-        ) {
-          runtime.scene
-            .matter.world.resume();
-
-          runtime.scene.gameState.paused =
-            false;
-        }
-      }
-    );
+    bindInformationDialogs();
   }
 
-  function createPhaserGame() {
-    const container =
+  async function initializeServices() {
+    if (
+      Payments &&
+      typeof Payments.initialize ===
+        "function"
+    ) {
+      await Payments.initialize();
+    }
+
+    updateWalletUi();
+
+    if (
+      Leaderboard &&
+      typeof Leaderboard.initialize ===
+        "function"
+    ) {
+      await Leaderboard.initialize({
+        tournamentId:
+          CONFIG.tournament.id,
+
+        season:
+          CONFIG.tournament.season
+      });
+    }
+
+    if (
+      Leaderboard &&
+      typeof Leaderboard.refresh ===
+        "function"
+    ) {
+      await Leaderboard.refresh();
+    }
+
+    updatePersonalBestUi();
+  }
+
+    function createPhaserGame() {
+    if (runtime.game) {
+      return runtime.game;
+    }
+
+    const gameContainer =
       document.getElementById(
         "game-container"
       );
 
-    if (!container) {
+    if (!gameContainer) {
       throw new Error(
         "The #game-container element is missing."
       );
     }
 
-    runtime.phaserGame =
-      new Phaser.Game({
-        type: Phaser.AUTO,
+    const rendererPreference =
+      String(
+        CONFIG.game?.renderer ||
+        "AUTO"
+      ).toUpperCase();
 
-        parent: "game-container",
+    let rendererType =
+      Phaser.AUTO;
+
+    if (
+      rendererPreference ===
+      "WEBGL"
+    ) {
+      rendererType =
+        Phaser.WEBGL;
+    }
+
+    if (
+      rendererPreference ===
+      "CANVAS"
+    ) {
+      rendererType =
+        Phaser.CANVAS;
+    }
+
+    const gameConfig = {
+      type: rendererType,
+
+      parent: "game-container",
+
+      width: WORLD.width,
+      height: WORLD.height,
+
+      backgroundColor:
+        CONFIG.game
+          ?.backgroundColor ||
+        "#070707",
+
+      transparent: false,
+
+      antialias:
+        CONFIG.game?.antialias !==
+        false,
+
+      roundPixels:
+        Boolean(
+          CONFIG.game?.roundPixels
+        ),
+
+      pixelArt:
+        Boolean(
+          CONFIG.game?.pixelArt
+        ),
+
+      preserveDrawingBuffer:
+        Boolean(
+          CONFIG.game
+            ?.preserveDrawingBuffer
+        ),
+
+      scene: [
+        PumpBallScene
+      ],
+
+      physics: {
+        default: "matter",
+
+        matter: {
+          gravity: {
+            x: 0,
+            y:
+              Number(
+                CONFIG.physics
+                  ?.gravity?.y
+              ) || 0.92
+          },
+
+          enableSleep: false,
+
+          debug:
+            Boolean(
+              CONFIG.app
+                ?.showPhysicsBodies
+            )
+        }
+      },
+
+      scale: {
+        mode:
+          Phaser.Scale.FIT,
+
+        autoCenter:
+          Phaser.Scale
+            .CENTER_BOTH,
+
+        parent:
+          "game-container",
 
         width: WORLD.width,
         height: WORLD.height,
 
-        transparent: true,
-
-        backgroundColor: "#050505",
-
-        antialias: true,
-        roundPixels: false,
-
-        physics: {
-          default: "matter",
-
-          matter: {
-            gravity: {
-              x: 0,
-              y: 0.92
-            },
-
-            enableSleeping: false,
-
-            debug:
-              Boolean(
-                CONFIG.app
-                  ?.showPhysicsBodies
-              )
-          }
+        min: {
+          width: 320,
+          height: 568
         },
 
-        scale: {
-          mode:
-            Phaser.Scale.FIT,
-
-          autoCenter:
-            Phaser.Scale.CENTER_BOTH,
-
+        max: {
           width: WORLD.width,
           height: WORLD.height
+        }
+      },
+
+      input: {
+        activePointers:
+          Number(
+            CONFIG.controls
+              ?.activePointers
+          ) || 4,
+
+        touch: {
+          capture: true
         },
 
-        render: {
-          pixelArt: false,
-          antialias: true,
-          powerPreference:
-            "high-performance"
+        mouse: {
+          preventDefaultWheel:
+            true
         },
 
-        scene: [PumpBallScene]
-      });
+        keyboard: {
+          capture: [
+            Phaser.Input.Keyboard
+              .KeyCodes.LEFT,
 
-    return runtime.phaserGame;
-  }
+            Phaser.Input.Keyboard
+              .KeyCodes.RIGHT,
 
-  function getState() {
-    return {
-      initialized:
-        runtime.initialized,
+            Phaser.Input.Keyboard
+              .KeyCodes.DOWN,
 
-      startingAttempt:
-        runtime.startingAttempt,
+            Phaser.Input.Keyboard
+              .KeyCodes.SPACE,
 
-      currentSessionId:
-        runtime.currentSessionId,
+            Phaser.Input.Keyboard
+              .KeyCodes.A,
 
-      currentCredit:
-        runtime.currentCredit,
+            Phaser.Input.Keyboard
+              .KeyCodes.D,
 
-      game:
-        runtime.scene
-          ? runtime.scene
-              .getPublicState()
-          : null,
+            Phaser.Input.Keyboard
+              .KeyCodes.Q,
 
-      latestError:
-        runtime.latestError
-          ? runtime.latestError.message
-          : null
+            Phaser.Input.Keyboard
+              .KeyCodes.E
+          ]
+        }
+      },
+
+      render: {
+        antialias:
+          CONFIG.game?.antialias !==
+          false,
+
+        roundPixels:
+          Boolean(
+            CONFIG.game?.roundPixels
+          ),
+
+        powerPreference:
+          "high-performance"
+      },
+
+      callbacks: {
+        postBoot: (game) => {
+          game.events.emit(
+            "pumpball:phaser-booted"
+          );
+        }
+      }
     };
-  }
 
-  async function startGame(options = {}) {
-    if (!runtime.scene) {
-      throw new Error(
-        "The PumpBall scene is not ready."
+    runtime.game =
+      new Phaser.Game(
+        gameConfig
       );
-    }
 
-    return runtime.scene.startGame(
-      options
-    );
+    return runtime.game;
   }
 
-  function pauseGame() {
-    runtime.scene?.pauseGame();
-  }
+  function updateControlLabels() {
+    const leftControl =
+      document.getElementById(
+        "left-control-key"
+      );
 
-  function resumeGame() {
-    runtime.scene?.resumeGame();
-  }
+    const rightControl =
+      document.getElementById(
+        "right-control-key"
+      );
 
-  async function endGame() {
-    if (!runtime.scene) {
+    const launcherControl =
+      document.getElementById(
+        "launcher-control-key"
+      );
+
+    const isTouchDevice =
+      window.matchMedia?.(
+        "(pointer: coarse)"
+      )?.matches ||
+      navigator.maxTouchPoints >
+        0;
+
+    if (isTouchDevice) {
+      if (leftControl) {
+        leftControl.textContent =
+          "Tap Left";
+      }
+
+      if (rightControl) {
+        rightControl.textContent =
+          "Tap Right";
+      }
+
+      if (launcherControl) {
+        launcherControl.textContent =
+          "Hold Lane";
+      }
+
       return;
     }
 
-    return runtime.scene.finishGame();
+    if (leftControl) {
+      leftControl.textContent =
+        "← / A";
+    }
+
+    if (rightControl) {
+      rightControl.textContent =
+        "→ / D";
+    }
+
+    if (launcherControl) {
+      launcherControl.textContent =
+        "Space";
+    }
   }
 
-  async function submitScore() {
-    if (!runtime.scene) {
-      throw new Error(
-        "The PumpBall scene is not ready."
-      );
+  function exposeDevelopmentApi() {
+    if (!CONFIG.app?.debug) {
+      return;
     }
+
+    window.PumpBallDebug = {
+      getRuntime() {
+        return runtime;
+      },
+
+      getScene() {
+        return runtime.scene;
+      },
+
+      addScore(amount = 1000) {
+        runtime.scene?.addScore(
+          amount,
+          WORLD.width / 2,
+          WORLD.height / 2,
+          "DEBUG"
+        );
+      },
+
+      drainBall() {
+        runtime.scene?.handleDrain();
+      },
+
+      finishAttempt() {
+        runtime.scene?.finishAttempt();
+      },
+
+      launchBall() {
+        const scene =
+          runtime.scene;
+
+        if (
+          !scene ||
+          scene.state.ballLaunched
+        ) {
+          return;
+        }
+
+        scene.state.launcherCharge =
+          1;
+
+        scene.state.launcherCharging =
+          true;
+
+        scene.releaseLauncher();
+      },
+
+      createTestCredit() {
+        return Payments
+          ?.createTestPlayCredit?.({
+            tournamentId:
+              CONFIG.tournament.id,
+
+            metadata: {
+              source:
+                "debug-api"
+            }
+          });
+      },
+
+      clearCredits() {
+        return Payments
+          ?.clearDevelopmentCredits?.();
+      },
+
+      refreshLeaderboard() {
+        return Leaderboard
+          ?.refresh?.();
+      }
+    };
+  }
+
+  function handleGlobalError(
+    event
+  ) {
+    const error =
+      event?.error ||
+      new Error(
+        event?.message ||
+        "Unknown PumpBall error."
+      );
+
+    runtime.latestError =
+      error;
+
+    console.error(
+      "[PumpBall] Unhandled error:",
+      error
+    );
 
     if (
-      !window.PumpBallLeaderboard ||
-      typeof window.PumpBallLeaderboard
-        .submitScore !== "function"
+      !runtime.initialized
     ) {
-      throw new Error(
-        "The leaderboard service is unavailable."
+      setFeedback(
+        "PumpBall could not finish loading. Refresh the page and try again.",
+        "error"
       );
     }
-
-    return window.PumpBallLeaderboard
-      .submitScore({
-        score:
-          runtime.scene.gameState.score,
-
-        sessionId:
-          runtime.scene.gameState
-            .sessionId,
-
-        verified:
-          runtime.currentCredit?.type ===
-          "paid"
-      });
   }
 
-  async function initialize() {
+  function handleUnhandledRejection(
+    event
+  ) {
+    runtime.latestError =
+      event?.reason || null;
+
+    console.error(
+      "[PumpBall] Unhandled promise rejection:",
+      event?.reason
+    );
+  }
+
+  function bindGlobalErrorHandling() {
+    window.addEventListener(
+      "error",
+      handleGlobalError
+    );
+
+    window.addEventListener(
+      "unhandledrejection",
+      handleUnhandledRejection
+    );
+  }
+
+  async function initializePumpBall() {
     if (runtime.initialized) {
-      return getState();
+      return;
     }
 
     cacheDom();
-    bindDomEvents();
+    bindGlobalErrorHandling();
 
     updateTournamentUi();
-    updateWalletUi();
-    showStartPanel();
+    updateCountdown();
+    updateControlLabels();
 
-    try {
-      window.PumpBallPayments
-        ?.initialize?.();
-
-      await window.PumpBallLeaderboard
-        ?.initialize?.();
-    } catch (error) {
-      console.warn(
-        "[PumpBall] Supporting service initialization warning:",
-        error
-      );
-    }
-
-    createPhaserGame();
-
-    runtime.initialized = true;
-
-    window.dispatchEvent(
-      new CustomEvent(
-        "pumpball:application-ready"
-      )
+    window.setInterval(
+      updateCountdown,
+      1000
     );
 
-    return getState();
+    bindUiEvents();
+
+    setButtonsBusy(true);
+
+    setFeedback(
+      "Loading PumpBall…",
+      "neutral"
+    );
+
+    try {
+      await initializeServices();
+
+      createPhaserGame();
+
+      exposeDevelopmentApi();
+
+      runtime.initialized =
+        true;
+
+      setFeedback("");
+
+      showStartPanel();
+
+      emit(
+        "pumpball:initialized",
+        {
+          tournamentId:
+            CONFIG.tournament.id,
+
+          season:
+            CONFIG.tournament
+              .season,
+
+          developmentMode:
+            Boolean(
+              CONFIG.app
+                ?.developmentMode
+            )
+        }
+      );
+    } catch (error) {
+      runtime.latestError =
+        error;
+
+      console.error(
+        "[PumpBall] Initialization failed.",
+        error
+      );
+
+      setFeedback(
+        error?.message ||
+          "PumpBall could not load.",
+        "error"
+      );
+
+      showStartPanel();
+    } finally {
+      setButtonsBusy(false);
+    }
   }
 
-  window.PumpBallGame =
-    Object.freeze({
-      initialize,
-      startGame,
-      endGame,
-      pauseGame,
-      resumeGame,
-      submitScore,
-      getState
-    });
+  window.PumpBallGame = {
+    initialize:
+      initializePumpBall,
 
-  document.addEventListener(
-    "DOMContentLoaded",
-    () => {
-      initialize().catch((error) => {
-        runtime.latestError = error;
+    getState() {
+      return {
+        initialized:
+          runtime.initialized,
 
-        console.error(
-          "[PumpBall] Initialization failed:",
-          error
-        );
+        startingAttempt:
+          runtime.startingAttempt,
 
-        setPlayFeedback(
-          error.message ||
-            "PumpBall could not be initialized.",
-          "error"
-        );
-      });
+        currentSessionId:
+          runtime.currentSessionId,
+
+        currentCredit:
+          runtime.currentCredit,
+
+        latestError:
+          runtime.latestError,
+
+        sceneState:
+          runtime.scene
+            ? {
+                ...runtime.scene
+                  .state
+              }
+            : null
+      };
     },
-    {
-      once: true
-    }
-  );
+
+    startPaidAttempt:
+      handlePaidPlay,
+
+    startFreeTestAttempt:
+      handleFreeTestPlay,
+
+    showStartPanel:
+      prepareNextAttempt,
+
+    scrollToLeaderboard:
+      returnToLeaderboard
+  };
+
+  if (
+    document.readyState ===
+    "loading"
+  ) {
+    document.addEventListener(
+      "DOMContentLoaded",
+      initializePumpBall,
+      {
+        once: true
+      }
+    );
+  } else {
+    initializePumpBall();
+  }
 })();
+ 
